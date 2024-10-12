@@ -143,13 +143,21 @@ impl TaskManager {
         let current_task_id = inner.current_task;
         inner.tasks[current_task_id]
     }
+    fn increase_syscall(&self, sys_call_id: usize) {
+        let mut inner = self.inner.exclusive_access();
+        let current_task = inner.current_task;
+        inner.tasks[current_task].syscall_times[sys_call_id] += 1;
+    }
 }
 
 /// Run the first task in task list.
 pub fn run_first_task() {
     TASK_MANAGER.run_first_task();
 }
-
+/// 增加系统调用次数，传入一个SYSCALL 的id
+pub fn increase_syscall_number(syscall_id: usize) {
+    TASK_MANAGER.increase_syscall(syscall_id);
+}
 /// Switch current `Running` task to the task we have found,
 /// or there is no `Ready` task and we can exit with all applications completed
 fn run_next_task() {
