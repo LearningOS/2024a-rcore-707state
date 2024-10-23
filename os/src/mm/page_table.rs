@@ -7,14 +7,23 @@ use bitflags::*;
 
 bitflags! {
     /// page table entry flags
+    /// 按照这个逻辑重写一边sys_get_time
     pub struct PTEFlags: u8 {
+        ///Valid有效标志
         const V = 1 << 0;
+        ///Readable可读
         const R = 1 << 1;
+        ///Writable可写
         const W = 1 << 2;
+        ///Executable可执行
         const X = 1 << 3;
+        ///User用户态可访问
         const U = 1 << 4;
+        ///Global全局页表
         const G = 1 << 5;
+        ///Accessed已被访问
         const A = 1 << 6;
+        ///Dirty脏页
         const D = 1 << 7;
     }
 }
