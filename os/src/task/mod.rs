@@ -35,17 +35,17 @@ pub use context::TaskContext;
 /// existing functions on `TaskManager`.
 pub struct TaskManager {
     /// total number of tasks
-    num_app: usize,
+    pub num_app: usize,
     /// use inner value to get mutable access
-    inner: UPSafeCell<TaskManagerInner>,
+    pub inner: UPSafeCell<TaskManagerInner>,
 }
 
 /// The task manager inner in 'UPSafeCell'
-struct TaskManagerInner {
+pub struct TaskManagerInner {
     /// task list
-    tasks: Vec<TaskControlBlock>,
+    pub tasks: Vec<TaskControlBlock>,
     /// id of current `Running` task
-    current_task: usize,
+    pub current_task: usize,
 }
 
 lazy_static! {
@@ -153,11 +153,21 @@ impl TaskManager {
             panic!("All applications completed!");
         }
     }
+    /// 增加系统调用次数
+    fn increase_syscall(&self, syscall_id: usize) {
+        let mut inner = self.inner.exclusive_access();
+        let current_task = inner.current_task;
+        inner.tasks[current_task].sys_call_times[syscall_id] += 1;
+    }
 }
 
 /// Run the first task in task list.
 pub fn run_first_task() {
     TASK_MANAGER.run_first_task();
+}
+/// 增加系统调用次数
+pub fn increase_syscall(syscall_id: usize) {
+    TASK_MANAGER.increase_syscall(syscall_id);
 }
 
 /// Switch current `Running` task to the task we have found,
