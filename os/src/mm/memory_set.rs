@@ -33,10 +33,12 @@ lazy_static! {
     pub static ref KERNEL_SPACE: Arc<UPSafeCell<MemorySet>> =
         Arc::new(unsafe { UPSafeCell::new(MemorySet::new_kernel()) });
 }
-/// address space
+/// 每个进程的地址空间管理器，他将进程的多个内存区域抽象为MapArea，通过页表将虚拟地址与物理地址相关联。
 pub struct MemorySet {
-    page_table: PageTable,
-    areas: Vec<MapArea>,
+    /// 每个进程都有一个唯一的多级页表    
+    pub page_table: PageTable,
+    /// 管理进程中的多个内存区域。每个MapArea表示一个连续的内存区域，用来处理映射和解除映射
+    pub areas: Vec<MapArea>,
 }
 
 impl MemorySet {
@@ -52,6 +54,7 @@ impl MemorySet {
         self.page_table.token()
     }
     /// Assume that no conflicts.
+    /// Framed是MapType对应的Framed
     pub fn insert_framed_area(
         &mut self,
         start_va: VirtAddr,
@@ -63,7 +66,9 @@ impl MemorySet {
             None,
         );
     }
-    fn push(&mut self, mut map_area: MapArea, data: Option<&[u8]>) {
+    /// 将map_area映射到当前进程的页表中，涉及到将虚拟地址与物理页面进行关联
+    /// data则是可选的，如果提供了数据就将数据复制到新映射的内存区域中。
+    pub fn push(&mut self, mut map_area: MapArea, data: Option<&[u8]>) {
         map_area.map(&mut self.page_table);
         if let Some(data) = data {
             map_area.copy_data(&mut self.page_table, data);
@@ -264,14 +269,20 @@ impl MemorySet {
     }
 }
 /// map area structure, controls a contiguous piece of virtual memory
+/// 管理进程中一段连续虚拟地址与物理地址之间的映射关系
 pub struct MapArea {
-    vpn_range: VPNRange,
-    data_frames: BTreeMap<VirtPageNum, FrameTracker>,
-    map_type: MapType,
-    map_perm: MapPermission,
+    /// virtual page number 区间
+    pub vpn_range: VPNRange,
+    /// 存储虚拟页码和物理页之间的映射关系，对应Framed的页
+    pub data_frames: BTreeMap<VirtPageNum, FrameTracker>,
+    /// 映射方式
+    pub map_type: MapType,
+    /// 页面权限
+    pub map_perm: MapPermission,
 }
-
+/// 实现MapArea的基本功能
 impl MapArea {
+    ///分配一块新的内存空间
     pub fn new(
         start_va: VirtAddr,
         end_va: VirtAddr,
@@ -287,6 +298,7 @@ impl MapArea {
             map_perm,
         }
     }
+    ///将一个虚拟页面映射到一个物理页面，物理页面的分配取决于map type
     pub fn map_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) {
         let ppn: PhysPageNum;
         match self.map_type {
@@ -303,24 +315,28 @@ impl MapArea {
         page_table.map(vpn, ppn, pte_flags);
     }
     #[allow(unused)]
+    ///从页表中移除一个虚拟页面
     pub fn unmap_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) {
         if self.map_type == MapType::Framed {
             self.data_frames.remove(&vpn);
         }
         page_table.unmap(vpn);
     }
+    ///对于vpn_range中所有的虚拟页面，都映射到page_table中。
     pub fn map(&mut self, page_table: &mut PageTable) {
         for vpn in self.vpn_range {
             self.map_one(page_table, vpn);
         }
     }
     #[allow(unused)]
+    /// 取消映射
     pub fn unmap(&mut self, page_table: &mut PageTable) {
         for vpn in self.vpn_range {
             self.unmap_one(page_table, vpn);
         }
     }
     #[allow(unused)]
+    /// 缩小内存区域，通过从尾部撤销映射直到new_end
     pub fn shrink_to(&mut self, page_table: &mut PageTable, new_end: VirtPageNum) {
         for vpn in VPNRange::new(new_end, self.vpn_range.get_end()) {
             self.unmap_one(page_table, vpn)
@@ -328,6 +344,7 @@ impl MapArea {
         self.vpn_range = VPNRange::new(self.vpn_range.get_start(), new_end);
     }
     #[allow(unused)]
+    /// 向当前的vpn_range的末尾添加页面，直到到达特定的new_end
     pub fn append_to(&mut self, page_table: &mut PageTable, new_end: VirtPageNum) {
         for vpn in VPNRange::new(self.vpn_range.get_end(), new_end) {
             self.map_one(page_table, vpn)
@@ -361,7 +378,9 @@ impl MapArea {
 #[derive(Copy, Clone, PartialEq, Debug)]
 /// map type for memory set: identical or framed
 pub enum MapType {
+    ///恒等映射用于在启用多级页表之后仍能够访问一个特定的物理地址指向的物理内存；
     Identical,
+    /// 对于每个虚拟页面都要映射到一个新分配的物理页帧
     Framed,
 }
 
@@ -378,7 +397,17 @@ bitflags! {
         const U = 1 << 4;
     }
 }
-
+impl MapPermission {
+    /// 从usize转为MapPermission
+    pub fn usize_to_mp(value: usize) -> Option<MapPermission> {
+        if value > u8::MAX as usize {
+            return None;
+        }
+        // 将usize转换为u8，并将其作为MapPermission的构造参数
+        let permission_bits = value as u8;
+        Some(MapPermission::from_bits_truncate(permission_bits))
+    }
+}
 /// Return (bottom, top) of a kernel stack in kernel space.
 pub fn kernel_stack_position(app_id: usize) -> (usize, usize) {
     let top = TRAMPOLINE - app_id * (KERNEL_STACK_SIZE + PAGE_SIZE);

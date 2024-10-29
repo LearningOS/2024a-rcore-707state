@@ -1,10 +1,12 @@
 //! Process management syscalls
 
 use crate::config::PAGE_SIZE;
-use crate::mm::page_table::PTEFlags;
-use crate::mm::{frame_alloc, VirtPageNum};
+use crate::mm::memory_set::{MapArea, MapType};
+use crate::mm::{MapPermission, VirtPageNum};
 use crate::syscall::{SYSCALL_EXIT, SYSCALL_MMAP, SYSCALL_MUNMAP, SYSCALL_YIELD};
 use crate::task::increase_syscall;
+// use crate::task::increase_syscall;
+use crate::timer::get_time_ms;
 use crate::{
     config::MAX_SYSCALL_NUM,
     mm::{page_table::PageTable, VirtAddr},
@@ -124,8 +126,8 @@ pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
     //TaskInfo转为字节数组
     let task_info = TaskInfo {
         status: current_task.task_status,
-        syscall_times: [0; MAX_SYSCALL_NUM],
-        time: 0,
+        syscall_times: current_task.sys_call_times,
+        time: get_time_ms(),
     };
     let info_bytes = unsafe {
         core::slice::from_raw_parts(
@@ -162,52 +164,36 @@ pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
 pub fn sys_mmap(start: usize, len: usize, port: usize) -> isize {
     trace!("kernel: sys_mmap NOT IMPLEMENTED YET!");
     increase_syscall(SYSCALL_MMAP);
-    trace!("increased syscall: SYSCALL_MMAP");
-    //长度无效或者地址地址没有页对齐
-    if len == 0 || start % PAGE_SIZE != 0 {
+    if start % PAGE_SIZE != 0 {
+        println!("Page start not rght!");
         return -1;
     }
-    //计算分配所需的页数
-    let num_pages = (len + PAGE_SIZE - 1) / PAGE_SIZE;
-    //获取当前进程的页表
-    let token = current_user_token();
-    let mut page_table = PageTable::from_token(token);
-    //分配物理页并开始映射
-    let mut current_start = start;
-    for _ in 0..num_pages {
-        //当前地址已经被映射
-        if page_table
-            .find_pte(VirtPageNum::from(current_start))
-            .is_some()
-        {
+    if port & !0b111 != 0 {
+        println!(" Wrong mode");
+        return -1;
+    }
+    let start_va = VirtAddr::from(start);
+    let end_va = VirtAddr::from(start_va.0 + len);
+    let _start_vpn = start_va.floor();
+    let _end_vpn = end_va.ceil();
+    let page_table = PageTable::from_token(current_user_token());
+    for i in _start_vpn.._end_vpn {
+        if let Some(_) = page_table.find_pte(i) {
             return -1;
         }
-        current_start += PAGE_SIZE;
     }
-    //为每个虚拟页分配物理页框并建立映射
-    current_start = start;
-    for _ in 0..num_pages {
-        let frame = match frame_alloc() {
-            Some(f) => f,
-            None => return -1,
-        };
-        let flags = match port & 0x7 {
-            0x1 => PTEFlags::R,
-            0x2 => PTEFlags::W,
-            0x3 => PTEFlags::R | PTEFlags::W,
-            0x4 => PTEFlags::X,
-            0x5 => PTEFlags::R | PTEFlags::X,
-            0x6 => PTEFlags::X | PTEFlags::W,
-            0x7 => PTEFlags::X | PTEFlags::W | PTEFlags::R,
-            _ => unreachable!(),
-        };
-        page_table.map(
-            VirtPageNum::from(current_start),
-            frame.ppn,
-            flags | PTEFlags::V,
-        );
-        current_start += PAGE_SIZE;
+    if !start_va.aligned() {
+        println!("Not aligned");
+        return -1;
     }
+    let mut _flags = MapPermission::from_bits_truncate((port as u8) << 1);
+    _flags.insert(MapPermission::U);
+    let map_area = MapArea::new(_start_vpn.into(), _end_vpn.into(), MapType::Framed, _flags);
+    let inner = &mut TASK_MANAGER.inner.exclusive_access();
+    let current_task_id = inner.current_task.clone();
+    let current_task = &mut inner.tasks[current_task_id];
+    let memory_set = &mut current_task.memory_set;
+    memory_set.push(map_area.into(), None);
     0
 }
 
@@ -221,25 +207,13 @@ pub fn sys_munmap(start: usize, len: usize) -> isize {
     }
     let num_pages = (len + PAGE_SIZE - 1) / PAGE_SIZE;
     //获取页表
-    let token = current_user_token();
-    let mut page_table = PageTable::from_token(token);
-    //遍历所有页并解除映射
-    let mut current_start = start;
-    for _ in 0..num_pages {
-        //虚拟页面没有被映射
-        if let Some(pte) = page_table.find_pte(VirtPageNum::from(current_start)) {
-            if !pte.is_valid() {
-                return -1;
-            }
-            page_table.unmap(VirtPageNum::from(current_start));
-        } else {
-            //当前地址没有被映射
-            return -1;
-        }
-        current_start += PAGE_SIZE;
-    }
+    let mut page_table = PageTable::from_token(current_user_token());
+    let start_va = VirtAddr::from(start);
+    let end_va = VirtAddr::from(start_va.0 + len);
+    let start_vpn = start_va.floor();
+    let end_vpn = end_va.ceil();
 
-    -1
+    0
 }
 /// change data segment size
 pub fn sys_sbrk(size: i32) -> isize {

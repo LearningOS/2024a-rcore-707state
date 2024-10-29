@@ -43,8 +43,8 @@ trait FrameAllocator {
     fn alloc(&mut self) -> Option<PhysPageNum>;
     fn dealloc(&mut self, ppn: PhysPageNum);
 }
-/// an implementation for frame allocator
 pub struct StackFrameAllocator {
+    /// an implementation for frame allocator
     current: usize,
     end: usize,
     recycled: Vec<usize>,

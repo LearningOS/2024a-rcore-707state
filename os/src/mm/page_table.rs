@@ -33,6 +33,7 @@ bitflags! {
 /// page table entry structure
 pub struct PageTableEntry {
     /// bits of page table entry
+    /// 这个bits结构中，包含了PPN和权限位
     pub bits: usize,
 }
 
@@ -75,8 +76,10 @@ impl PageTableEntry {
 
 /// page table structure
 pub struct PageTable {
+    /// PageTable要保存根节点的物理页号，作为页表唯一的区分标志
     root_ppn: PhysPageNum,
-    frames: Vec<FrameTracker>,
+    /// 保存页表的所有节点（包括页表的所有节点所在的物理页帧）
+    pub frames: Vec<FrameTracker>,
 }
 
 /// Assume that it won't oom when creating/mapping.
@@ -135,18 +138,37 @@ impl PageTable {
         result
     }
     /// set the map between virtual page number and physical page number
+    /// 插入一个键值对，物理页号ppn和页表项标志位flags作为不同参数传入
+    /// 建立一个虚实地址映射关系
+    /// 修改返回值
     #[allow(unused)]
-    pub fn map(&mut self, vpn: VirtPageNum, ppn: PhysPageNum, flags: PTEFlags) {
-        let pte = self.find_pte_create(vpn).unwrap();
-        assert!(!pte.is_valid(), "vpn {:?} is mapped before mapping", vpn);
-        *pte = PageTableEntry::new(ppn, flags | PTEFlags::V);
+    pub fn map(&mut self, vpn: VirtPageNum, ppn: PhysPageNum, flags: PTEFlags) -> isize {
+        match self.find_pte_create(vpn) {
+            Some(pte) => {
+                if pte.is_valid() {
+                    return -1;
+                }
+                *pte = PageTableEntry::new(ppn, flags | PTEFlags::V);
+                0
+            }
+            None => -1,
+        }
     }
     /// remove the map between virtual page number and physical page number
+    /// 拆除虚实地址映射关系
+    /// 修改返回值
     #[allow(unused)]
-    pub fn unmap(&mut self, vpn: VirtPageNum) {
-        let pte = self.find_pte(vpn).unwrap();
-        assert!(pte.is_valid(), "vpn {:?} is invalid before unmapping", vpn);
-        *pte = PageTableEntry::empty();
+    pub fn unmap(&mut self, vpn: VirtPageNum) -> isize {
+        match self.find_pte(vpn) {
+            Some(pte) => {
+                if !pte.is_valid() {
+                    return -1;
+                }
+                *pte = PageTableEntry::empty();
+                0
+            }
+            None => -1,
+        }
     }
     /// get the page table entry from the virtual page number
     pub fn translate(&self, vpn: VirtPageNum) -> Option<PageTableEntry> {
@@ -158,7 +180,14 @@ impl PageTable {
     }
 }
 
+impl Default for PageTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Translate&Copy a ptr[u8] array with LENGTH len to a mutable u8 Vec through page table
+/// 通过页表将一个指向内存的指针与其长度映射为可变的字节片段，也就是说，它负责将虚拟地址翻译为物理地址，并从中提取对应内存页面的数据。
 pub fn translated_byte_buffer(token: usize, ptr: *const u8, len: usize) -> Vec<&'static mut [u8]> {
     let page_table = PageTable::from_token(token);
     let mut start = ptr as usize;

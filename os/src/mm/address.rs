@@ -1,7 +1,10 @@
 //! Implementation of physical and virtual address and page number.
 use super::PageTableEntry;
 use crate::config::{PAGE_SIZE, PAGE_SIZE_BITS};
-use core::fmt::{self, Debug, Formatter};
+use core::{
+    fmt::{self, Debug, Display, Formatter},
+    iter::Step,
+};
 /// physical address
 const PA_WIDTH_SV39: usize = 56;
 const VA_WIDTH_SV39: usize = 39;
@@ -28,7 +31,17 @@ impl Debug for VirtAddr {
         f.write_fmt(format_args!("VA:{:#x}", self.0))
     }
 }
+impl Display for VirtAddr {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.write_fmt(format_args!("VA:{:#x}", self.0))
+    }
+}
 impl Debug for VirtPageNum {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.write_fmt(format_args!("VPN:{:#x}", self.0))
+    }
+}
+impl Display for VirtPageNum {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.write_fmt(format_args!("VPN:{:#x}", self.0))
     }
@@ -38,12 +51,21 @@ impl Debug for PhysAddr {
         f.write_fmt(format_args!("PA:{:#x}", self.0))
     }
 }
+impl Display for PhysAddr {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.write_fmt(format_args!("PA:{:#x}", self.0))
+    }
+}
 impl Debug for PhysPageNum {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.write_fmt(format_args!("PPN:{:#x}", self.0))
     }
 }
-
+impl Display for PhysPageNum {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.write_fmt(format_args!("PPN:{:#x}", self.0))
+    }
+}
 /// T: {PhysAddr, VirtAddr, PhysPageNum, VirtPageNum}
 /// T -> usize: T.0
 /// usize -> T: usize.into()
@@ -217,13 +239,16 @@ impl<T> SimpleRange<T>
 where
     T: StepByOne + Copy + PartialEq + PartialOrd + Debug,
 {
+    /// 创建一个新的范围
     pub fn new(start: T, end: T) -> Self {
         assert!(start <= end, "start {:?} > end {:?}!", start, end);
         Self { l: start, r: end }
     }
+    /// 获取范围的左端点
     pub fn get_start(&self) -> T {
         self.l
     }
+    /// 获取范围的右端点
     pub fn get_end(&self) -> T {
         self.r
     }
@@ -250,6 +275,7 @@ impl<T> SimpleRangeIterator<T>
 where
     T: StepByOne + Copy + PartialEq + PartialOrd + Debug,
 {
+    /// 实现SimpleRangeIterator的new方法
     pub fn new(l: T, r: T) -> Self {
         Self { current: l, end: r }
     }
@@ -269,5 +295,41 @@ where
         }
     }
 }
+/// 实现两个函数
+impl<T> SimpleRange<T>
+where
+    T: StepByOne + Copy + PartialEq + PartialOrd + Debug,
+{
+    /// 判断区间是否包含另一个区间
+    pub fn contains_range(&self, other: &SimpleRange<T>) -> bool {
+        self.l <= other.l && self.r >= other.r
+    }
+
+    /// 判断区间是否与另一个区间重叠
+    pub fn intersects(&self, other: &SimpleRange<T>) -> bool {
+        self.l < other.r && self.r > other.l
+    }
+}
+
 /// a simple range structure for virtual page number
 pub type VPNRange = SimpleRange<VirtPageNum>;
+
+impl Step for VirtPageNum {
+    fn steps_between(start: &Self, end: &Self) -> Option<usize> {
+        if start.0 > end.0 {
+            None
+        } else {
+            Some(end.0 - start.0)
+        }
+    }
+    fn forward_checked(start: Self, count: usize) -> Option<Self> {
+        Some(VirtPageNum(start.0 + count))
+    }
+    fn backward_checked(start: Self, count: usize) -> Option<Self> {
+        if start.0 >= count {
+            Some(VirtPageNum(start.0 - count))
+        } else {
+            None
+        }
+    }
+}
