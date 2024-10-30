@@ -140,7 +140,6 @@ impl PageTable {
     /// set the map between virtual page number and physical page number
     /// 插入一个键值对，物理页号ppn和页表项标志位flags作为不同参数传入
     /// 建立一个虚实地址映射关系
-    /// 修改返回值
     #[allow(unused)]
     pub fn map(&mut self, vpn: VirtPageNum, ppn: PhysPageNum, flags: PTEFlags) -> isize {
         match self.find_pte_create(vpn) {

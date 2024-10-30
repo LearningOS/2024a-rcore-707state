@@ -2,11 +2,11 @@
 
 use crate::config::PAGE_SIZE;
 use crate::mm::memory_set::{MapArea, MapType};
-use crate::mm::{MapPermission, VirtPageNum};
+use crate::mm::MapPermission;
 use crate::syscall::{SYSCALL_EXIT, SYSCALL_MMAP, SYSCALL_MUNMAP, SYSCALL_YIELD};
 use crate::task::increase_syscall;
-// use crate::task::increase_syscall;
 use crate::timer::get_time_ms;
+
 use crate::{
     config::MAX_SYSCALL_NUM,
     mm::{page_table::PageTable, VirtAddr},
@@ -159,60 +159,103 @@ pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
     }
     0
 }
-
-// YOUR JOB: Implement mmap.
+/// 有bug
+/// 2024-10-29 : 目前发现一个问题就是mmap(start,
+/// size)时，比如说从0x1000页面开始分配一个页面，也就是0x1000-0x1001,
+/// 会存为左闭右闭区间，虽然内存分配是左闭右开，但是存储貌似有问题
 pub fn sys_mmap(start: usize, len: usize, port: usize) -> isize {
-    trace!("kernel: sys_mmap NOT IMPLEMENTED YET!");
     increase_syscall(SYSCALL_MMAP);
+    // 检查 start 是否是页对齐的
     if start % PAGE_SIZE != 0 {
-        println!("Page start not rght!");
+        println!("Page start not right!");
         return -1;
     }
-    if port & !0b111 != 0 {
-        println!(" Wrong mode");
+    // 检查 port 是否是有效的
+    if port & !0b111 != 0 || port == 0 {
+        println!("Wrong mode");
         return -1;
     }
+    // 计算虚拟地址范围
     let start_va = VirtAddr::from(start);
-    let end_va = VirtAddr::from(start_va.0 + len);
-    let _start_vpn = start_va.floor();
-    let _end_vpn = end_va.ceil();
-    let page_table = PageTable::from_token(current_user_token());
-    for i in _start_vpn.._end_vpn {
-        if let Some(_) = page_table.find_pte(i) {
-            return -1;
-        }
-    }
+    let end_va = VirtAddr::from(start + len);
+    let start_vpn = start_va.floor();
+    let end_vpn = end_va.ceil();
+    // 获取当前任务的页表
+    let _page_table = PageTable::from_token(current_user_token());
+    // 检查虚拟地址是否对齐
     if !start_va.aligned() {
         println!("Not aligned");
         return -1;
     }
-    let mut _flags = MapPermission::from_bits_truncate((port as u8) << 1);
-    _flags.insert(MapPermission::U);
-    let map_area = MapArea::new(_start_vpn.into(), _end_vpn.into(), MapType::Framed, _flags);
+    // 设置映射权限
+    let mut flags = MapPermission::from_bits_truncate((port as u8) << 1);
+    flags.insert(MapPermission::U);
+    // 获取当前任务的内存集
     let inner = &mut TASK_MANAGER.inner.exclusive_access();
     let current_task_id = inner.current_task.clone();
     let current_task = &mut inner.tasks[current_task_id];
     let memory_set = &mut current_task.memory_set;
-    memory_set.push(map_area.into(), None);
+    // 创建新的 MapArea
+    let map_area = MapArea::new(start_vpn.into(), end_vpn.into(), MapType::Framed, flags);
+    // 检查映射区域是否已经存在
+    // 2024-10-30 理解错find_pte的作用了，所以前面找find_pte的操作是错误的
+    for i in map_area.vpn_range {
+        if memory_set
+            .areas
+            .iter()
+            .any(|area| area.data_frames.keys().any(|k| k.0 == i.0))
+        {
+            println!("Already have one btree map key at {}", i);
+            return -1;
+        }
+    }
+    // 将新的 MapArea 添加到内存集中
+    memory_set.push(map_area, None);
     0
 }
 
 // YOUR JOB: Implement munmap.
 pub fn sys_munmap(start: usize, len: usize) -> isize {
-    trace!("kernel: sys_munmap NOT IMPLEMENTED YET!");
     increase_syscall(SYSCALL_MUNMAP);
-    //检验起始地址和长度
-    if len == 0 || start % PAGE_SIZE != 0 {
+    if start % PAGE_SIZE != 0 {
+        println!("not aligned!");
         return -1;
     }
-    let num_pages = (len + PAGE_SIZE - 1) / PAGE_SIZE;
-    //获取页表
-    let mut page_table = PageTable::from_token(current_user_token());
+    if len <= 0 {
+        println!("Unmap size not right!");
+        return -1;
+    }
+    //计算起始地址到终止地址
     let start_va = VirtAddr::from(start);
-    let end_va = VirtAddr::from(start_va.0 + len);
+    let end_va = VirtAddr::from(start + len);
     let start_vpn = start_va.floor();
     let end_vpn = end_va.ceil();
-
+    // 获取当前任务的页表
+    let mut page_table = PageTable::from_token(current_user_token());
+    // 获取当前任务的内存集
+    let inner = &mut TASK_MANAGER.inner.exclusive_access();
+    let current_task_id = inner.current_task.clone();
+    let current_task = &mut inner.tasks[current_task_id];
+    let memory_set = &mut current_task.memory_set;
+    for area in memory_set.areas.iter_mut() {
+        if area.vpn_range.get_start() == start_vpn {
+            if area.vpn_range.get_end() == end_vpn {
+                println!(
+                    "Trying to munmap at: {} to {}",
+                    area.vpn_range.get_start(),
+                    area.vpn_range.get_end()
+                );
+                area.unmap(&mut page_table);
+                return 0;
+            } else if area.vpn_range.get_end() > end_vpn {
+                println!("Error in munmap: You're unmapping page partially!!!");
+                return -1;
+            } else {
+                println!("Error in munmap: You're unmapping page larger than allocated size!!!");
+                return -1;
+            }
+        }
+    }
     0
 }
 /// change data segment size

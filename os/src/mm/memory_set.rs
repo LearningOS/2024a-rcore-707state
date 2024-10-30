@@ -270,6 +270,7 @@ impl MemorySet {
 }
 /// map area structure, controls a contiguous piece of virtual memory
 /// 管理进程中一段连续虚拟地址与物理地址之间的映射关系
+#[derive(Clone)]
 pub struct MapArea {
     /// virtual page number 区间
     pub vpn_range: VPNRange,

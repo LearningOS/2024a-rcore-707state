@@ -1,0 +1,5 @@
+break os::mm::frame_allocator::frame_alloc
+break os::mm::memory_set::MapArea::map_one
+break os::syscall::process::sys_mmap
+break os::mm::memory_set::MemorySet::push
+break os::mm::page_table::PageTable::find_pte
