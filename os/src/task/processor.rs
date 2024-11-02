@@ -47,6 +47,7 @@ impl Processor {
 }
 
 lazy_static! {
+    ///全局处理器管理结构
     pub static ref PROCESSOR: UPSafeCell<Processor> = unsafe { UPSafeCell::new(Processor::new()) };
 }
 
@@ -91,7 +92,11 @@ pub fn current_user_token() -> usize {
     let task = current_task().unwrap();
     task.get_user_token()
 }
-
+/// Increase current task syscall times
+/// 增加当前任务/进程的系统调用计数次数
+pub fn increase_syscall_times(syscall_id: usize) {
+    current_task().unwrap().increase_syscall_times(syscall_id);
+}
 ///Get the mutable reference to trap context of current task
 pub fn current_trap_cx() -> &'static mut TrapContext {
     current_task()

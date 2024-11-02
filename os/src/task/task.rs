@@ -1,7 +1,7 @@
 //! Types related to task management & Functions for completely changing TCB
 use super::TaskContext;
 use super::{kstack_alloc, pid_alloc, KernelStack, PidHandle};
-use crate::config::TRAP_CONTEXT_BASE;
+use crate::config::{MAX_SYSCALL_NUM, TRAP_CONTEXT_BASE};
 use crate::mm::{MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
 use crate::sync::UPSafeCell;
 use crate::trap::{trap_handler, TrapContext};
@@ -35,7 +35,7 @@ impl TaskControlBlock {
         inner.memory_set.token()
     }
 }
-
+/// 运行过程中会发生变化的信息
 pub struct TaskControlBlockInner {
     /// The physical page number of the frame where the trap context is placed
     pub trap_cx_ppn: PhysPageNum,
@@ -68,6 +68,10 @@ pub struct TaskControlBlockInner {
 
     /// Program break
     pub program_brk: usize,
+
+    /// System Call Counter
+    /// 系统调用计数器
+    pub syscall_times: [u32; MAX_SYSCALL_NUM],
 }
 
 impl TaskControlBlockInner {
@@ -82,6 +86,7 @@ impl TaskControlBlockInner {
     fn get_status(&self) -> TaskStatus {
         self.task_status
     }
+    ///是否是僵尸进程
     pub fn is_zombie(&self) -> bool {
         self.get_status() == TaskStatus::Zombie
     }
@@ -118,6 +123,7 @@ impl TaskControlBlock {
                     exit_code: 0,
                     heap_bottom: user_sp,
                     program_brk: user_sp,
+                    syscall_times: [0; MAX_SYSCALL_NUM],
                 })
             },
         };
@@ -144,6 +150,8 @@ impl TaskControlBlock {
 
         // **** access current TCB exclusively
         let mut inner = self.inner_exclusive_access();
+        // 这时候的上下文环境是fork调用后的，也就是子进程从父进程已经拷贝了所有TCB信息
+        // 但是，这里需要替换memory_set和trap_cx才能执行
         // substitute memory_set
         inner.memory_set = memory_set;
         // update trap_cx ppn
@@ -162,12 +170,14 @@ impl TaskControlBlock {
         // **** release inner automatically
     }
 
+    /// 这玩意返回值是一整个TaskControlBlock
     /// parent process fork the child process
     pub fn fork(self: &Arc<Self>) -> Arc<Self> {
         // ---- access parent PCB exclusively
         let mut parent_inner = self.inner_exclusive_access();
         // copy user space(include trap context)
         let memory_set = MemorySet::from_existed_user(&parent_inner.memory_set);
+        // 将trap上下文虚拟地址转换为实际的物理页号
         let trap_cx_ppn = memory_set
             .translate(VirtAddr::from(TRAP_CONTEXT_BASE).into())
             .unwrap()
@@ -191,6 +201,7 @@ impl TaskControlBlock {
                     exit_code: 0,
                     heap_bottom: parent_inner.heap_bottom,
                     program_brk: parent_inner.program_brk,
+                    syscall_times: [0; MAX_SYSCALL_NUM],
                 })
             },
         });
@@ -205,7 +216,52 @@ impl TaskControlBlock {
         // **** release child PCB
         // ---- release parent PCB
     }
+    /// 尝试实现vfork
+    /// ERROR: 2024-11-02 应该是错的，因为TaskStatus并没有表示暂停的状态
+    pub fn vfork(self: &Arc<Self>) -> Arc<Self> {
+        let mut parent_inner = self.inner_exclusive_access();
+        let memory_set = parent_inner.memory_set.clone();
+        let trap_cx_ppn = memory_set
+            .translate(VirtAddr::from(TRAP_CONTEXT_BASE).into())
+            .unwrap()
+            .ppn();
+        // Allocate a PID and kernel stack in kernel space for the child process
+        let pid_handle = pid_alloc();
+        let kernel_stack = kstack_alloc();
+        let kernel_stack_top = kernel_stack.get_top();
+        let task_control_block = Arc::new(TaskControlBlock {
+            pid: pid_handle,
+            kernel_stack,
+            inner: unsafe {
+                UPSafeCell::new(TaskControlBlockInner {
+                    trap_cx_ppn,
+                    base_size: parent_inner.base_size,
+                    task_cx: TaskContext::goto_trap_return(kernel_stack_top),
+                    task_status: TaskStatus::Ready,
+                    memory_set, // Share parent's address space
+                    parent: Some(Arc::downgrade(self)),
+                    children: Vec::new(),
+                    exit_code: 0,
+                    heap_bottom: parent_inner.heap_bottom,
+                    program_brk: parent_inner.program_brk,
+                    syscall_times: [0; MAX_SYSCALL_NUM],
+                })
+            },
+        });
 
+        // Add the child process to the parent's list of children
+        parent_inner.children.push(task_control_block.clone());
+
+        // Modify kernel_sp in the trap context for the child process
+        let trap_cx = task_control_block.inner_exclusive_access().get_trap_cx();
+        trap_cx.kernel_sp = kernel_stack_top;
+
+        // Set the parent process to Paused, waiting for the child to call exec or exit
+        parent_inner.task_status = TaskStatus::Ready;
+
+        // Return the child process's task control block
+        task_control_block
+    }
     /// get pid of process
     pub fn getpid(&self) -> usize {
         self.pid.0
@@ -235,6 +291,11 @@ impl TaskControlBlock {
         } else {
             None
         }
+    }
+    /// Increase a syscall counter
+    /// 增加一个系统调用的统计次数
+    pub fn increase_syscall_times(&self, syscall_id: usize) {
+        self.inner.exclusive_access().syscall_times[syscall_id] += 1;
     }
 }
 

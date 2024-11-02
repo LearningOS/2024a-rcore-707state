@@ -217,13 +217,17 @@ impl<T> SimpleRange<T>
 where
     T: StepByOne + Copy + PartialEq + PartialOrd + Debug,
 {
+    /// 创建新的虚拟内存范围
     pub fn new(start: T, end: T) -> Self {
         assert!(start <= end, "start {:?} > end {:?}!", start, end);
         Self { l: start, r: end }
     }
+
+    /// 获取起始地址
     pub fn get_start(&self) -> T {
         self.l
     }
+    ///获取结尾地址
     pub fn get_end(&self) -> T {
         self.r
     }
@@ -250,6 +254,7 @@ impl<T> SimpleRangeIterator<T>
 where
     T: StepByOne + Copy + PartialEq + PartialOrd + Debug,
 {
+    /// 创建迭代器
     pub fn new(l: T, r: T) -> Self {
         Self { current: l, end: r }
     }
