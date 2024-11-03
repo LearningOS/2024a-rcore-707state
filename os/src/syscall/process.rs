@@ -271,7 +271,7 @@ pub fn sys_mmap(start: usize, len: usize, port: usize) -> isize {
     }
     // 将新的 MapArea 添加到内存集中
     memory_set.push(map_area, None);
-    0 - 1
+    0
 }
 
 /// YOUR JOB: Implement munmap.
@@ -339,12 +339,16 @@ pub fn sys_spawn(path: *const u8) -> isize {
     // 获取用户态的路径字符串
     let token = current_user_token();
     let path = translated_str(token, path);
-
     // 根据路径加载程序数据
     if let Some(data) = get_app_data_by_name(path.as_str()) {
+        let current_task = current_task().unwrap();
         // 创建新的任务控制块（TCB）
         let new_task = TaskControlBlock::spawn(&data);
-
+        new_task.inner_exclusive_access().parent = Some(Arc::downgrade(&current_task));
+        current_task
+            .inner_exclusive_access()
+            .children
+            .push(new_task.clone());
         // 获取新任务的 PID
         let new_pid = new_task.pid.0;
 
