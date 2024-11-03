@@ -8,7 +8,7 @@ use crate::trap::{trap_handler, TrapContext};
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::cell::RefMut;
-const BIG_STRIDE: usize = 1_000_000;
+const BIG_STRIDE: usize = 1 << 31;
 /// Task control block structure
 ///
 /// Directly save the contents that will not change during running
@@ -33,18 +33,6 @@ impl TaskControlBlock {
     pub fn get_user_token(&self) -> usize {
         let inner = self.inner_exclusive_access();
         inner.memory_set.token()
-    }
-    /// 设置优先级
-    pub fn set_priority(&mut self, priority: usize) -> isize {
-        if priority < 2 {
-            //非法优先级
-            -1
-        } else {
-            // WARNING 有可能死锁
-            self.inner_exclusive_access().priority = priority;
-            self.inner_exclusive_access().pass = BIG_STRIDE / priority;
-            priority as isize
-        }
     }
 }
 /// 运行过程中会发生变化的信息
@@ -111,6 +99,17 @@ impl TaskControlBlockInner {
     ///是否是僵尸进程
     pub fn is_zombie(&self) -> bool {
         self.get_status() == TaskStatus::Zombie
+    }
+    /// 设置优先级
+    pub fn set_priority(&mut self, priority: usize) -> isize {
+        if priority < 2 {
+            //非法优先级
+            -1
+        } else {
+            self.priority = priority;
+            self.pass = BIG_STRIDE / priority;
+            priority as isize
+        }
     }
 }
 

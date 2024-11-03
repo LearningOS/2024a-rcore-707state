@@ -25,6 +25,34 @@ impl TaskManager {
     pub fn fetch(&mut self) -> Option<Arc<TaskControlBlock>> {
         self.ready_queue.pop_front()
     }
+    /// Stride fetch
+    pub fn stride_fetch(&mut self) -> Option<Arc<TaskControlBlock>> {
+        if self.ready_queue.is_empty() {
+            return None;
+        }
+        // Find the task with the minimum stride
+        let mut min_stride_task = None;
+        let mut min_stride = usize::MAX;
+        for task in &self.ready_queue {
+            let task_inner = task.inner_exclusive_access();
+            if task_inner.stride < min_stride {
+                min_stride = task_inner.stride;
+                min_stride_task = Some(task.clone());
+            }
+        }
+        // Update the stride of the chosen task
+        if let Some(task) = min_stride_task.clone() {
+            let mut task_inner = task.inner_exclusive_access();
+            task_inner.stride += task_inner.pass;
+        }
+        // Remove the selected task from the ready queue
+        if let Some(task) = &min_stride_task {
+            if let Some(pos) = self.ready_queue.iter().position(|x| Arc::ptr_eq(x, task)) {
+                self.ready_queue.remove(pos);
+            }
+        }
+        min_stride_task
+    }
 }
 
 lazy_static! {
@@ -42,5 +70,5 @@ pub fn add_task(task: Arc<TaskControlBlock>) {
 /// Take a process out of the ready queue
 pub fn fetch_task() -> Option<Arc<TaskControlBlock>> {
     //trace!("kernel: TaskManager::fetch_task");
-    TASK_MANAGER.exclusive_access().fetch()
+    TASK_MANAGER.exclusive_access().stride_fetch()
 }
