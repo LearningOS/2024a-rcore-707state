@@ -1,4 +1,5 @@
 //! Process management syscalls
+
 use alloc::sync::Arc;
 
 use super::{
@@ -135,15 +136,11 @@ pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
     // ---- release current PCB automatically
 }
 
-/// YOUR JOB: get time with second and microsecond
+///2024-11-03 完成get_time
 /// HINT: You might reimplement it with virtual memory management.
 /// HINT: What if [`TimeVal`] is splitted by two pages ?
 pub fn sys_get_time(ts: *mut TimeVal, _tz: usize) -> isize {
     increase_syscall_times(SYSCALL_GET_TIME);
-    trace!(
-        "kernel:pid[{}] sys_get_time NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
     let page_table = PageTable::from_token(current_user_token());
     let current_time = get_time();
     let time_val = TimeVal {
@@ -176,16 +173,11 @@ pub fn sys_get_time(ts: *mut TimeVal, _tz: usize) -> isize {
     }
     0
 }
-
-/// YOUR JOB: Finish sys_task_info to pass testcases
+/// 2024-11-03 完成task_info
 /// HINT: You might reimplement it with virtual memory management.
 /// HINT: What if [`TaskInfo`] is splitted by two pages ?
 pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
     increase_syscall_times(SYSCALL_TASK_INFO);
-    trace!(
-        "kernel:pid[{}] sys_task_info NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
     let page_table = PageTable::from_token(current_user_token());
     let task = current_task().unwrap();
     let current_task = task.inner_exclusive_access();
@@ -221,13 +213,9 @@ pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
     -1
 }
 
-/// YOUR JOB: Implement mmap.
+/// 2024-11-03 完成mmap
 pub fn sys_mmap(start: usize, len: usize, port: usize) -> isize {
     increase_syscall_times(SYSCALL_MMAP);
-    trace!(
-        "kernel:pid[{}] sys_mmap NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
     if start % PAGE_SIZE != 0 {
         println!("Page start not right!");
         return -1;
@@ -273,14 +261,9 @@ pub fn sys_mmap(start: usize, len: usize, port: usize) -> isize {
     memory_set.push(map_area, None);
     0
 }
-
-/// YOUR JOB: Implement munmap.
+/// 2024-11-03 完成munmap
 pub fn sys_munmap(start: usize, len: usize) -> isize {
     increase_syscall_times(SYSCALL_MUNMAP);
-    trace!(
-        "kernel:pid[{}] sys_munmap NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
     if start % PAGE_SIZE != 0 {
         println!("not aligned!");
         return -1;
@@ -320,7 +303,6 @@ pub fn sys_munmap(start: usize, len: usize) -> isize {
 /// change data segment size
 pub fn sys_sbrk(size: i32) -> isize {
     increase_syscall_times(SYSCALL_SBRK);
-    trace!("kernel:pid[{}] sys_sbrk", current_task().unwrap().pid.0);
     if let Some(old_brk) = current_task().unwrap().change_program_brk(size) {
         old_brk as isize
     } else {
@@ -328,14 +310,9 @@ pub fn sys_sbrk(size: i32) -> isize {
     }
 }
 
-/// YOUR JOB: Implement spawn.
 /// HINT: fork + exec =/= spawn
 pub fn sys_spawn(path: *const u8) -> isize {
     increase_syscall_times(SYSCALL_SPAWN);
-    trace!(
-        "kernel:pid[{}] sys_spawn NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
     // 获取用户态的路径字符串
     let token = current_user_token();
     let path = translated_str(token, path);
@@ -345,16 +322,15 @@ pub fn sys_spawn(path: *const u8) -> isize {
         // 创建新的任务控制块（TCB）
         let new_task = TaskControlBlock::spawn(&data);
         new_task.inner_exclusive_access().parent = Some(Arc::downgrade(&current_task));
+        // 注意这里的clone, 不用clone的话会发生所有权转移
         current_task
             .inner_exclusive_access()
             .children
             .push(new_task.clone());
         // 获取新任务的 PID
         let new_pid = new_task.pid.0;
-
         // 将新任务添加到调度器
         add_task(new_task);
-
         // 返回新任务的 PID
         new_pid as isize
     } else {
@@ -366,8 +342,8 @@ pub fn sys_spawn(path: *const u8) -> isize {
 // YOUR JOB: Set task priority.
 pub fn sys_set_priority(_prio: isize) -> isize {
     trace!(
-        "kernel:pid[{}] sys_set_priority NOT IMPLEMENTED",
+        "kernel:pid[{}] sys_set_priority",
         current_task().unwrap().pid.0
     );
-    -1
+    0
 }

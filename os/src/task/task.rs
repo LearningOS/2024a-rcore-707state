@@ -8,7 +8,7 @@ use crate::trap::{trap_handler, TrapContext};
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::cell::RefMut;
-
+const BIG_STRIDE: usize = 1_000_000;
 /// Task control block structure
 ///
 /// Directly save the contents that will not change during running
@@ -33,6 +33,18 @@ impl TaskControlBlock {
     pub fn get_user_token(&self) -> usize {
         let inner = self.inner_exclusive_access();
         inner.memory_set.token()
+    }
+    /// 设置优先级
+    pub fn set_priority(&mut self, priority: usize) -> isize {
+        if priority < 2 {
+            //非法优先级
+            -1
+        } else {
+            // WARNING 有可能死锁
+            self.inner_exclusive_access().priority = priority;
+            self.inner_exclusive_access().pass = BIG_STRIDE / priority;
+            priority as isize
+        }
     }
 }
 /// 运行过程中会发生变化的信息
@@ -68,6 +80,16 @@ pub struct TaskControlBlockInner {
 
     /// Program break
     pub program_brk: usize,
+
+    /// 优先级调度相关
+    /// 当前进程的stride值
+    pub stride: usize,
+
+    /// 当前进程的步长 (与优先级成反比)
+    pub pass: usize,
+
+    /// 优先级, 优先级应该会改变，所以要放入Inner
+    pub priority: usize,
 
     /// System Call Counter
     /// 系统调用计数器
@@ -123,6 +145,9 @@ impl TaskControlBlock {
                     exit_code: 0,
                     heap_bottom: user_sp,
                     program_brk: user_sp,
+                    stride: 0,
+                    priority: 16,
+                    pass: BIG_STRIDE / 16,
                     syscall_times: [0; MAX_SYSCALL_NUM],
                 })
             },
@@ -201,6 +226,9 @@ impl TaskControlBlock {
                     exit_code: 0,
                     heap_bottom: parent_inner.heap_bottom,
                     program_brk: parent_inner.program_brk,
+                    stride: 0,
+                    pass: BIG_STRIDE / 16,
+                    priority: 16,
                     syscall_times: [0; MAX_SYSCALL_NUM],
                 })
             },
@@ -244,6 +272,9 @@ impl TaskControlBlock {
                     exit_code: 0,
                     heap_bottom: parent_inner.heap_bottom,
                     program_brk: parent_inner.program_brk,
+                    stride: 0,
+                    pass: BIG_STRIDE / 16,
+                    priority: 16,
                     syscall_times: [0; MAX_SYSCALL_NUM],
                 })
             },
@@ -296,6 +327,9 @@ impl TaskControlBlock {
                     parent: None,
                     children: Vec::new(),
                     exit_code: 0,
+                    stride: 0,
+                    pass: BIG_STRIDE / 16,
+                    priority: 16,
                     heap_bottom: user_sp,
                     program_brk: user_sp,
                     syscall_times: [0; MAX_SYSCALL_NUM],
