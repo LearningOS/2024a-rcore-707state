@@ -16,7 +16,7 @@ use crate::{
     syscall::{SYSCALL_EXEC, SYSCALL_EXIT},
     task::{
         add_task, current_task, current_user_token, exit_current_and_run_next,
-        increase_syscall_times, suspend_current_and_run_next, TaskStatus,
+        increase_syscall_times, suspend_current_and_run_next, TaskControlBlock, TaskStatus,
     },
     timer::{get_time, get_time_ms},
 };
@@ -158,33 +158,22 @@ pub fn sys_get_time(ts: *mut TimeVal, _tz: usize) -> isize {
         )
     };
     for chunk in time_val_bytes.chunks(4096) {
-        //为什么要分块，因为TimeVal结构体可能横跨两个页面
-        //获取虚拟页号
         let vpn = VirtAddr::from(ts_addr).floor();
-        //获取页内偏移
         let page_offset = VirtAddr::from(ts_addr).page_offset();
-        //获得有效页表项
         let pte = match page_table.translate(vpn) {
-            //确保虚拟页号映射到了一个有效的物理页
             Some(pte) if pte.is_valid() => pte,
             _ => return -1,
         };
-        // 获取物理页的字节数组
-        let ppn = pte.ppn(); //找到物理页
+        let ppn = pte.ppn();
         let bytes = ppn.get_bytes_array();
-        //计算写入的长度
         let write_len = (bytes.len() - page_offset).min(chunk.len());
-        //将字节块写入物理页中的对应位置
         for i in 0..write_len {
             unsafe {
-                // volatile 写入：表示这是和硬件或内存有关的操作，不允许被优化，否则会导致程序错误
                 core::ptr::write_volatile(bytes.as_mut_ptr().add(page_offset + i), chunk[i]);
             }
         }
-        //更新地址，处理跨页
         ts_addr += write_len;
     }
-
     0
 }
 
@@ -213,19 +202,15 @@ pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
     };
     let mut addr = _ti as usize;
     for chunk in info_bytes.chunks(4096) {
-        //计算虚拟页号和业内偏移
         let vpn = VirtAddr::from(addr).floor();
         let offset = VirtAddr::from(addr).page_offset();
-        //查找页表项
         let pte = match page_table.translate(vpn) {
             Some(pte) if pte.is_valid() => pte,
             _ => return -1,
         };
         let ppn = pte.ppn();
         let target_bytes = ppn.get_bytes_array();
-        //计算可写入的长度
         let write_len = (target_bytes.len() - offset).min(chunk.len());
-        //写入物理页的数据
         for i in 0..write_len {
             unsafe {
                 core::ptr::write_volatile(target_bytes.as_mut_ptr().add(offset + i), chunk[i]);
@@ -233,7 +218,6 @@ pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
         }
         addr += write_len;
     }
-
     -1
 }
 
@@ -352,18 +336,25 @@ pub fn sys_spawn(path: *const u8) -> isize {
         "kernel:pid[{}] sys_spawn NOT IMPLEMENTED",
         current_task().unwrap().pid.0
     );
-    let parent_task = current_task().unwrap();
-    let child_task = parent_task.vfork();
-    if Arc::ptr_eq(&current_task().unwrap(), &child_task) {
-        let token = current_user_token();
-        let path_str = translated_str(token, path);
-        if let Some(data) = get_app_data_by_name(path_str.as_str()) {
-            child_task.exec(data);
-            0
-        } else {
-            -1
-        }
+    // 获取用户态的路径字符串
+    let token = current_user_token();
+    let path = translated_str(token, path);
+
+    // 根据路径加载程序数据
+    if let Some(data) = get_app_data_by_name(path.as_str()) {
+        // 创建新的任务控制块（TCB）
+        let new_task = TaskControlBlock::spawn(&data);
+
+        // 获取新任务的 PID
+        let new_pid = new_task.pid.0;
+
+        // 将新任务添加到调度器
+        add_task(new_task);
+
+        // 返回新任务的 PID
+        new_pid as isize
     } else {
+        // 如果路径无效，返回 -1 表示错误
         -1
     }
 }
