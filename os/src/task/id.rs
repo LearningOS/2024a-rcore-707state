@@ -8,19 +8,21 @@ use crate::mm::{MapPermission, VirtAddr, KERNEL_SPACE};
 use crate::sync::UPSafeCell;
 use alloc::vec::Vec;
 use lazy_static::*;
-
+/// pid allocator/recycle
 pub struct RecycleAllocator {
     current: usize,
     recycled: Vec<usize>,
 }
 
 impl RecycleAllocator {
+    /// new
     pub fn new() -> Self {
         RecycleAllocator {
             current: 0,
             recycled: Vec::new(),
         }
     }
+    /// alloc
     pub fn alloc(&mut self) -> usize {
         if let Some(id) = self.recycled.pop() {
             id
@@ -29,6 +31,7 @@ impl RecycleAllocator {
             self.current - 1
         }
     }
+    /// dealloc
     pub fn dealloc(&mut self, id: usize) {
         assert!(id < self.current);
         assert!(

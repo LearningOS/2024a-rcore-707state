@@ -1,4 +1,6 @@
 //!Stdin & Stdout
+use core::panic;
+
 use super::File;
 use crate::mm::UserBuffer;
 use crate::sbi::console_getchar;
@@ -39,6 +41,12 @@ impl File for Stdin {
     fn write(&self, _user_buf: UserBuffer) -> usize {
         panic!("Cannot write to stdin!");
     }
+    fn disk_inode_type(&self) -> super::StatMode {
+        panic!("Stdin does not have Stat Mode");
+    }
+    fn stat(&self) -> super::Stat {
+        panic!("Stdin does not have Stat");
+    }
 }
 
 impl File for Stdout {
@@ -56,5 +64,11 @@ impl File for Stdout {
             print!("{}", core::str::from_utf8(*buffer).unwrap());
         }
         user_buf.len()
+    }
+    fn disk_inode_type(&self) -> super::StatMode {
+        panic!("Stdout does not have Stat mode");
+    }
+    fn stat(&self) -> super::Stat {
+        panic!("Stdout does not have Stat");
     }
 }

@@ -13,14 +13,14 @@
 //!
 //! Be careful when you see `__switch` ASM function in `switch.S`. Control flow around this function
 //! might not be what you expect.
-mod context;
-mod id;
-mod manager;
-mod processor;
-mod switch;
+pub mod context;
+pub mod id;
+pub mod manager;
+pub mod processor;
+pub mod switch;
 #[allow(clippy::module_inception)]
 #[allow(rustdoc::private_intra_doc_links)]
-mod task;
+pub mod task;
 
 use crate::fs::{open_file, OpenFlags};
 use alloc::sync::Arc;

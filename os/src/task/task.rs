@@ -1,7 +1,7 @@
 //! Types related to task management & Functions for completely changing TCB
 use super::TaskContext;
 use super::{kstack_alloc, pid_alloc, KernelStack, PidHandle};
-use crate::config::TRAP_CONTEXT_BASE;
+use crate::config::{MAX_SYSCALL_NUM, TRAP_CONTEXT_BASE};
 use crate::fs::{File, Stdin, Stdout};
 use crate::mm::{MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
 use crate::sync::UPSafeCell;
@@ -10,7 +10,7 @@ use alloc::sync::{Arc, Weak};
 use alloc::vec;
 use alloc::vec::Vec;
 use core::cell::RefMut;
-
+const BIG_STRIDE: usize = 1 << 31;
 /// Task control block structure
 ///
 /// Directly save the contents that will not change during running
@@ -37,7 +37,7 @@ impl TaskControlBlock {
         inner.memory_set.token()
     }
 }
-
+/// 封装可变状态
 pub struct TaskControlBlockInner {
     /// The physical page number of the frame where the trap context is placed
     pub trap_cx_ppn: PhysPageNum,
@@ -64,6 +64,7 @@ pub struct TaskControlBlockInner {
 
     /// It is set when active exit or execution error occurs
     pub exit_code: i32,
+    /// fd 表
     pub fd_table: Vec<Option<Arc<dyn File + Send + Sync>>>,
 
     /// Heap bottom
@@ -71,27 +72,57 @@ pub struct TaskControlBlockInner {
 
     /// Program break
     pub program_brk: usize,
+
+    /// 优先级调度相关
+    /// 当前进程的stride值
+    pub stride: usize,
+
+    /// 当前进程的步长 (与优先级成反比)
+    pub pass: usize,
+
+    /// 优先级, 优先级应该会改变，所以要放入Inner
+    pub priority: usize,
+
+    /// System Call Counter
+    /// 系统调用计数器
+    pub syscall_times: [u32; MAX_SYSCALL_NUM],
 }
 
 impl TaskControlBlockInner {
+    /// 获取任务的trap context
     pub fn get_trap_cx(&self) -> &'static mut TrapContext {
         self.trap_cx_ppn.get_mut()
     }
+    /// 获取user token
     pub fn get_user_token(&self) -> usize {
         self.memory_set.token()
     }
+    /// 获取状态
     fn get_status(&self) -> TaskStatus {
         self.task_status
     }
+    ///是否是僵尸进程
     pub fn is_zombie(&self) -> bool {
         self.get_status() == TaskStatus::Zombie
     }
+    /// 分配fd
     pub fn alloc_fd(&mut self) -> usize {
         if let Some(fd) = (0..self.fd_table.len()).find(|fd| self.fd_table[*fd].is_none()) {
             fd
         } else {
             self.fd_table.push(None);
             self.fd_table.len() - 1
+        }
+    }
+    /// 设置优先级
+    pub fn set_priority(&mut self, priority: usize) -> isize {
+        if priority < 2 {
+            //非法优先级
+            -1
+        } else {
+            self.priority = priority;
+            self.pass = BIG_STRIDE / priority;
+            priority as isize
         }
     }
 }
@@ -135,6 +166,10 @@ impl TaskControlBlock {
                     ],
                     heap_bottom: user_sp,
                     program_brk: user_sp,
+                    stride: 0,
+                    pass: BIG_STRIDE / 16,
+                    priority: 16,
+                    syscall_times: [0; MAX_SYSCALL_NUM],
                 })
             },
         };
@@ -216,6 +251,10 @@ impl TaskControlBlock {
                     fd_table: new_fd_table,
                     heap_bottom: parent_inner.heap_bottom,
                     program_brk: parent_inner.program_brk,
+                    stride: 0,
+                    pass: BIG_STRIDE / 16,
+                    priority: 16,
+                    syscall_times: [0; MAX_SYSCALL_NUM],
                 })
             },
         });
@@ -229,6 +268,67 @@ impl TaskControlBlock {
         task_control_block
         // **** release child PCB
         // ---- release parent PCB
+    }
+    /// spawn a new thread
+    pub fn spawn(elf_data: &[u8]) -> Arc<Self> {
+        // Generate a new memory set based on the provided ELF file
+        let (memory_set, user_sp, entry_point) = MemorySet::from_elf(elf_data);
+
+        // Translate the virtual address for the trap context to get its physical page number
+        let trap_cx_ppn = memory_set
+            .translate(VirtAddr::from(TRAP_CONTEXT_BASE).into())
+            .unwrap()
+            .ppn();
+
+        // Allocate a new PID and a kernel stack
+        let pid_handle = pid_alloc();
+        let kernel_stack = kstack_alloc();
+        let kernel_stack_top = kernel_stack.get_top();
+
+        // Create the task control block (TCB) with the initial setup for the spawned process
+        let task_control_block = Arc::new(TaskControlBlock {
+            pid: pid_handle,
+            kernel_stack,
+            inner: unsafe {
+                UPSafeCell::new(TaskControlBlockInner {
+                    trap_cx_ppn,
+                    base_size: user_sp,
+                    task_cx: TaskContext::goto_trap_return(kernel_stack_top),
+                    task_status: TaskStatus::Ready,
+                    memory_set,
+                    parent: None,
+                    children: Vec::new(),
+                    fd_table: vec![
+                        // 0 -> stdin
+                        Some(Arc::new(Stdin)),
+                        // 1 -> stdout
+                        Some(Arc::new(Stdout)),
+                        // 2 -> stderr
+                        Some(Arc::new(Stdout)),
+                    ],
+                    exit_code: 0,
+                    stride: 0,
+                    pass: BIG_STRIDE / 16,
+                    priority: 16,
+                    heap_bottom: user_sp,
+                    program_brk: user_sp,
+                    syscall_times: [0; MAX_SYSCALL_NUM],
+                })
+            },
+        });
+
+        // Prepare the trap context for the new process in user space
+        let trap_cx = task_control_block.inner_exclusive_access().get_trap_cx();
+        *trap_cx = TrapContext::app_init_context(
+            entry_point,
+            user_sp,
+            KERNEL_SPACE.exclusive_access().token(),
+            kernel_stack_top,
+            trap_handler as usize,
+        );
+
+        // Return the new task control block
+        task_control_block
     }
 
     /// get pid of process
@@ -260,6 +360,10 @@ impl TaskControlBlock {
         } else {
             None
         }
+    }
+    /// Increase a syscall counter
+    pub fn increase_syscall_times(&self, syscall_id: usize) {
+        self.inner.exclusive_access().syscall_times[syscall_id] += 1;
     }
 }
 

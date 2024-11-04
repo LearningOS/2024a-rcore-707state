@@ -3,13 +3,23 @@
 use alloc::sync::Arc;
 
 use crate::{
-    config::MAX_SYSCALL_NUM,
+    config::{MAX_SYSCALL_NUM, PAGE_SIZE},
     fs::{open_file, OpenFlags},
-    mm::{translated_refmut, translated_str},
+    mm::{
+        memory_set::{MapArea, MapType},
+        translated_refmut, translated_str, MapPermission, PageTable, VirtAddr,
+    },
+    syscall::SYSCALL_SPAWN,
     task::{
         add_task, current_task, current_user_token, exit_current_and_run_next,
-        suspend_current_and_run_next, TaskStatus,
+        processor::increase_syscall_times, suspend_current_and_run_next, TaskControlBlock,
+        TaskStatus,
     },
+    timer::{get_time, get_time_ms},
+};
+
+use super::{
+    SYSCALL_GET_TIME, SYSCALL_MMAP, SYSCALL_MUNMAP, SYSCALL_SET_PRIORITY, SYSCALL_TASK_INFO,
 };
 
 #[repr(C)]
@@ -117,41 +127,175 @@ pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
 /// YOUR JOB: get time with second and microsecond
 /// HINT: You might reimplement it with virtual memory management.
 /// HINT: What if [`TimeVal`] is splitted by two pages ?
-pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_get_time NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+pub fn sys_get_time(ts: *mut TimeVal, _tz: usize) -> isize {
+    increase_syscall_times(SYSCALL_GET_TIME);
+    trace!("kernel:pid[{}] sys_get_time", current_task().unwrap().pid.0);
+    let page_table = PageTable::from_token(current_user_token());
+    let current_time = get_time();
+    let time_val = TimeVal {
+        sec: current_time / 1_000_000,
+        usec: current_time % 1_000_000,
+    };
+    let mut ts_addr = ts as usize;
+    let time_val_bytes = unsafe {
+        core::slice::from_raw_parts(
+            &time_val as *const _ as *const u8,
+            core::mem::size_of::<TimeVal>(),
+        )
+    };
+    for chunk in time_val_bytes.chunks(4096) {
+        let vpn = VirtAddr::from(ts_addr).floor();
+        let page_offset = VirtAddr::from(ts_addr).page_offset();
+        let pte = match page_table.translate(vpn) {
+            Some(pte) if pte.is_valid() => pte,
+            _ => return -1,
+        };
+        let ppn = pte.ppn();
+        let bytes = ppn.get_bytes_array();
+        let write_len = (bytes.len() - page_offset).min(chunk.len());
+        for i in 0..write_len {
+            unsafe {
+                core::ptr::write_volatile(bytes.as_mut_ptr().add(page_offset + i), chunk[i]);
+            }
+        }
+        ts_addr += write_len;
+    }
+    0
 }
 
 /// YOUR JOB: Finish sys_task_info to pass testcases
 /// HINT: You might reimplement it with virtual memory management.
 /// HINT: What if [`TaskInfo`] is splitted by two pages ?
 pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
+    increase_syscall_times(SYSCALL_TASK_INFO);
     trace!(
-        "kernel:pid[{}] sys_task_info NOT IMPLEMENTED",
+        "kernel:pid[{}] sys_task_info",
         current_task().unwrap().pid.0
     );
-    -1
+    let page_table = PageTable::from_token(current_user_token());
+    let task = current_task().unwrap();
+    let current_task = task.inner_exclusive_access();
+    let task_info = TaskInfo {
+        status: current_task.task_status,
+        syscall_times: current_task.syscall_times,
+        time: get_time_ms(),
+    };
+    let info_bytes = unsafe {
+        core::slice::from_raw_parts(
+            &task_info as *const _ as *const u8,
+            core::mem::size_of::<TaskInfo>(),
+        )
+    };
+    let mut addr = _ti as usize;
+    for chunk in info_bytes.chunks(4096) {
+        let vpn = VirtAddr::from(addr).floor();
+        let offset = VirtAddr::from(addr).page_offset();
+        let pte = match page_table.translate(vpn) {
+            Some(pte) if pte.is_valid() => pte,
+            _ => return -1,
+        };
+        let ppn = pte.ppn();
+        let target_bytes = ppn.get_bytes_array();
+        let write_len = (target_bytes.len() - offset).min(chunk.len());
+        for i in 0..write_len {
+            unsafe {
+                core::ptr::write_volatile(target_bytes.as_mut_ptr().add(offset + i), chunk[i]);
+            }
+        }
+        addr += write_len;
+    }
+    0
 }
 
 /// YOUR JOB: Implement mmap.
-pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_mmap NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+pub fn sys_mmap(start: usize, len: usize, port: usize) -> isize {
+    increase_syscall_times(SYSCALL_MMAP);
+    trace!("kernel:pid[{}] sys_mmap", current_task().unwrap().pid.0);
+    if start % PAGE_SIZE != 0 {
+        println!("Page start not right!");
+        return -1;
+    }
+    // 检查 port 是否是有效的
+    if port & !0b111 != 0 || port == 0 {
+        println!("Wrong mode");
+        return -1;
+    }
+    // 计算虚拟地址范围
+    let start_va = VirtAddr::from(start);
+    let end_va = VirtAddr::from(start + len);
+    let start_vpn = start_va.floor();
+    let end_vpn = end_va.ceil();
+    // 获取当前任务的页表
+    let _page_table = PageTable::from_token(current_user_token());
+    // 检查虚拟地址是否对齐
+    if !start_va.aligned() {
+        println!("Not aligned");
+        return -1;
+    }
+    // 设置映射权限
+    let mut flags = MapPermission::from_bits_truncate((port as u8) << 1);
+    flags.insert(MapPermission::U);
+    // 获取当前任务的内存集
+    let task = current_task().unwrap();
+    let mut current_task = task.inner_exclusive_access();
+    let memory_set = &mut current_task.memory_set;
+    // 创建新的 MapArea
+    let map_area = MapArea::new(start_vpn.into(), end_vpn.into(), MapType::Framed, flags);
+    // 检查映射区域是否已经存在
+    // 2024-10-30 理解错find_pte的作用了，所以前面找find_pte的操作是错误的
+    for i in map_area.vpn_range {
+        if memory_set
+            .areas
+            .iter()
+            .any(|area| area.data_frames.keys().any(|k| k.0 == i.0))
+        {
+            return -1;
+        }
+    }
+    // 将新的 MapArea 添加到内存集中
+    memory_set.push(map_area, None);
+    0
 }
 
 /// YOUR JOB: Implement munmap.
-pub fn sys_munmap(_start: usize, _len: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_munmap NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+pub fn sys_munmap(start: usize, len: usize) -> isize {
+    increase_syscall_times(SYSCALL_MUNMAP);
+    trace!("kernel:pid[{}] sys_munmap ", current_task().unwrap().pid.0);
+    increase_syscall_times(SYSCALL_MUNMAP);
+    if start % PAGE_SIZE != 0 {
+        println!("not aligned!");
+        return -1;
+    }
+    if len <= 0 {
+        println!("Unmap size not right!");
+        return -1;
+    }
+    //计算起始地址到终止地址
+    let start_va = VirtAddr::from(start);
+    let end_va = VirtAddr::from(start + len);
+    let start_vpn = start_va.floor();
+    let end_vpn = end_va.ceil();
+    // 获取当前任务的页表
+    let mut page_table = PageTable::from_token(current_user_token());
+    // 获取当前任务的内存集
+    let task = current_task().unwrap();
+    let mut current_task = task.inner_exclusive_access();
+    let memory_set = &mut current_task.memory_set;
+    for area in memory_set.areas.iter_mut() {
+        if area.vpn_range.get_start() == start_vpn {
+            if area.vpn_range.get_end() == end_vpn {
+                area.unmap(&mut page_table);
+                return 0;
+            } else if area.vpn_range.get_end() > end_vpn {
+                println!("Error in munmap: You're unmapping page partially!!!");
+                return -1;
+            } else {
+                println!("Error in munmap: You're unmapping page larger than allocated size!!!");
+                return -1;
+            }
+        }
+    }
+    0
 }
 
 /// change data segment size
@@ -166,19 +310,50 @@ pub fn sys_sbrk(size: i32) -> isize {
 
 /// YOUR JOB: Implement spawn.
 /// HINT: fork + exec =/= spawn
-pub fn sys_spawn(_path: *const u8) -> isize {
+pub fn sys_spawn(path: *const u8) -> isize {
     trace!(
         "kernel:pid[{}] sys_spawn NOT IMPLEMENTED",
         current_task().unwrap().pid.0
     );
-    -1
+    increase_syscall_times(SYSCALL_SPAWN);
+    // 获取用户态的路径字符串
+    let token = current_user_token();
+    let path = translated_str(token, path);
+    // 根据路径加载程序数据
+    if let Some(app_inode) = open_file(path.as_str(), OpenFlags::RDONLY) {
+        let current_task = current_task().unwrap();
+        let all_data = app_inode.read_all();
+        // 创建新的任务控制块（TCB）
+        let new_task = TaskControlBlock::spawn(all_data.as_slice());
+        new_task.inner_exclusive_access().parent = Some(Arc::downgrade(&current_task));
+        // 注意这里的clone, 不用clone的话会发生所有权转移
+        current_task
+            .inner_exclusive_access()
+            .children
+            .push(new_task.clone());
+        // 获取新任务的 PID
+        let new_pid = new_task.pid.0;
+        // 将新任务添加到调度器
+        add_task(new_task);
+        // 返回新任务的 PID
+        new_pid as isize
+    } else {
+        // 如果路径无效，返回 -1 表示错误
+        -1
+    }
 }
 
 // YOUR JOB: Set task priority.
 pub fn sys_set_priority(_prio: isize) -> isize {
+    increase_syscall_times(SYSCALL_SET_PRIORITY);
     trace!(
-        "kernel:pid[{}] sys_set_priority NOT IMPLEMENTED",
+        "kernel:pid[{}] sys_set_priority",
         current_task().unwrap().pid.0
     );
-    -1
+    if _prio < 2 {
+        return -1;
+    }
+    let task = current_task().unwrap();
+    let mut inner = task.inner_exclusive_access();
+    inner.set_priority(_prio as usize)
 }

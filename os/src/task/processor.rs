@@ -47,6 +47,7 @@ impl Processor {
 }
 
 lazy_static! {
+    ///Global  PROCESSOR
     pub static ref PROCESSOR: UPSafeCell<Processor> = unsafe { UPSafeCell::new(Processor::new()) };
 }
 
@@ -80,7 +81,11 @@ pub fn run_tasks() {
 pub fn take_current_task() -> Option<Arc<TaskControlBlock>> {
     PROCESSOR.exclusive_access().take_current()
 }
-
+/// increase syscall times
+#[allow(unused)]
+pub fn increase_syscall_times(syscall_id: usize) {
+    current_task().unwrap().increase_syscall_times(syscall_id);
+}
 /// Get a copy of the current task
 pub fn current_task() -> Option<Arc<TaskControlBlock>> {
     PROCESSOR.exclusive_access().current()

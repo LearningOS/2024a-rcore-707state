@@ -18,14 +18,19 @@ use lazy_static::*;
 /// A wrapper around a filesystem inode
 /// to implement File trait atop
 pub struct OSInode {
-    readable: bool,
-    writable: bool,
-    inner: UPSafeCell<OSInodeInner>,
+    /// Readable?
+    pub readable: bool,
+    /// Writable?
+    pub writable: bool,
+    /// Inner OSInodeInner
+    pub inner: UPSafeCell<OSInodeInner>,
 }
 /// The OS inode inner in 'UPSafeCell'
 pub struct OSInodeInner {
-    offset: usize,
-    inode: Arc<Inode>,
+    /// offset
+    pub offset: usize,
+    /// inode
+    pub inode: Arc<Inode>,
 }
 
 impl OSInode {
@@ -37,6 +42,8 @@ impl OSInode {
             inner: unsafe { UPSafeCell::new(OSInodeInner { offset: 0, inode }) },
         }
     }
+    // /// get inode is dir
+    // pub fn get_inode_stat(&self) -> isize {}
     /// read all data from the inode
     pub fn read_all(&self) -> Vec<u8> {
         let mut inner = self.inner.exclusive_access();
@@ -53,8 +60,8 @@ impl OSInode {
         v
     }
 }
-
 lazy_static! {
+    /// 表示根节点对应的INODE
     pub static ref ROOT_INODE: Arc<Inode> = {
         let efs = EasyFileSystem::open(BLOCK_DEVICE.clone());
         Arc::new(EasyFileSystem::root_inode(&efs))
@@ -154,5 +161,31 @@ impl File for OSInode {
             total_write_size += write_size;
         }
         total_write_size
+    }
+    fn stat(&self) -> super::Stat {
+        let inner = &self.inner.exclusive_access().inode;
+        let stat_mode = match inner.is_dir() {
+            1 => super::StatMode::FILE,
+            2 => super::StatMode::DIR,
+            _ => panic!("Wrong return val by inode"),
+        };
+        // ERROR 这里的nlink要获取
+        super::Stat {
+            dev: 0,
+            ino: inner.block_id as u64,
+            mode: stat_mode,
+            nlink: inner.get_disk_inode().link_count,
+            pad: [0; 7],
+        }
+    }
+    fn disk_inode_type(&self) -> super::StatMode {
+        let inode_type = self.inner.exclusive_access().inode.is_dir();
+        if inode_type == 1 {
+            return super::StatMode::FILE;
+        } else if inode_type == 2 {
+            return super::StatMode::DIR;
+        } else {
+            return super::StatMode::NULL;
+        }
     }
 }
