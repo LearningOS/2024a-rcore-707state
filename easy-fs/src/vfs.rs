@@ -218,10 +218,6 @@ impl Inode {
                 dirent.as_bytes(),
                 &self.block_device,
             );
-        });
-
-        // 增加目标 inode 的链接计数
-        target_inode.modify_disk_inode(|disk_inode| {
             disk_inode.link_count += 1;
         });
 

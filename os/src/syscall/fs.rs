@@ -91,19 +91,21 @@ pub fn sys_close(fd: usize) -> isize {
 /// YOUR JOB: Implement fstat.
 pub fn sys_fstat(_fd: usize, _st: *mut Stat) -> isize {
     increase_syscall_times(SYSCALL_FSTAT);
-    trace!("kernel:pid[{}] sys_fstat", current_task().unwrap().pid.0);
     let task = current_task().unwrap();
-    let inner = task.inner_exclusive_access();
-    if _fd >= inner.fd_table.len() {
-        println!("fd too big: {}", _fd);
-        return -1;
-    }
-    let inode_file = match &inner.fd_table[_fd] {
-        Some(file) => file.stat(),
-        None => {
+    let inode_file;
+    {
+        let inner = task.inner_exclusive_access();
+        if _fd >= inner.fd_table.len() {
+            println!("fd too big: {}", _fd);
             return -1;
         }
-    };
+        inode_file = match &inner.fd_table[_fd] {
+            Some(file) => file.stat(),
+            None => {
+                return -1;
+            }
+        };
+    }
     let stat_bytes = unsafe {
         core::slice::from_raw_parts(
             &inode_file as *const _ as *const u8,
@@ -136,10 +138,7 @@ pub fn sys_fstat(_fd: usize, _st: *mut Stat) -> isize {
 /// 2024-11-04 尝试实现linkat syscall
 pub fn sys_linkat(_old_name: *const u8, _new_name: *const u8) -> isize {
     increase_syscall_times(SYSCALL_LINKAT);
-    trace!(
-        "kernel:pid[{}] sys_linkat NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
+    trace!("kernel:pid[{}] sys_linkat", current_task().unwrap().pid.0);
     let token = current_user_token();
     let old_name = translated_str(token, _old_name);
     let new_name = translated_str(token, _new_name);
