@@ -187,30 +187,26 @@ impl Inode {
         });
         block_cache_sync_all();
     }
-    /// link
+    /// link, 将一个new_name链接到target_inode
     pub fn link(&self, new_name: &str, target_inode: &Arc<Inode>) -> usize {
         // 获取文件系统锁
         let mut fs = self.fs.lock();
-
-        // 检查当前 inode 是否是目录（因为硬链接只能在目录中创建）
-        let op = |disk_inode: &DiskInode| {
-            assert!(disk_inode.is_dir(), "Link target must be a directory");
-            // 检查是否已存在相同名称的文件
-            self.find_inode_id(new_name, disk_inode)
-        };
-        if self.read_disk_inode(op).is_some() {
-            return 0; // 如果目标目录中已有相同名称的文件，返回错误
-        }
-
+        // // 检查当前 inode 是否是目录（因为硬链接只能在目录中创建）
+        // let op = |disk_inode: &DiskInode| {
+        //     assert!(disk_inode.is_dir(), "Link target must be a directory");
+        //     // 检查是否已存在相同名称的文件
+        //     self.find_inode_id(new_name, disk_inode)
+        // };
+        // if self.read_disk_inode(op).is_some() {
+        //     return 0; // 如果目标目录中已有相同名称的文件，返回错误
+        // }
         // 在目录中创建新条目，指向 `target_inode`
         self.modify_disk_inode(|disk_inode| {
             // 获取目录中的文件数量
             let file_count = (disk_inode.size as usize) / DIRENT_SZ;
             let new_size = (file_count + 1) * DIRENT_SZ;
-
             // 增加目录的大小，以容纳新的条目
             self.increase_size(new_size as u32, disk_inode, &mut fs);
-
             // 创建新的目录条目，指向目标 inode
             let dirent = DirEntry::new(new_name, target_inode.block_id as u32);
             disk_inode.write_at(
@@ -220,7 +216,6 @@ impl Inode {
             );
             disk_inode.link_count += 1;
         });
-
         block_cache_sync_all();
         1
     }

@@ -144,12 +144,16 @@ pub fn sys_linkat(_old_name: *const u8, _new_name: *const u8) -> isize {
     let new_name = translated_str(token, _new_name);
     let old_inode = match ROOT_INODE.find(&old_name) {
         Some(inode) => inode,
-        None => return -1,
+        None => {
+            println!("There is no such file: {}", old_name);
+            return -1;
+        }
     };
     if ROOT_INODE.find(&new_name).is_some() {
         return -1;
     }
     if ROOT_INODE.link(&new_name, &old_inode) == 1 {
+        println!("Successfully linked");
         return 0;
     }
     // match ROOT_INODE.
