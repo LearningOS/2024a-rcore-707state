@@ -141,7 +141,9 @@ pub fn sys_linkat(_old_name: *const u8, _new_name: *const u8) -> isize {
     trace!("kernel:pid[{}] sys_linkat", current_task().unwrap().pid.0);
     let token = current_user_token();
     let old_name = translated_str(token, _old_name);
+    println!("Translated old name");
     let new_name = translated_str(token, _new_name);
+    println!("translated new name");
     let old_inode = match ROOT_INODE.find(&old_name) {
         Some(inode) => inode,
         None => {
@@ -149,12 +151,21 @@ pub fn sys_linkat(_old_name: *const u8, _new_name: *const u8) -> isize {
             return -1;
         }
     };
+    println!("Got old name inode: {}", old_inode.block_id);
     if ROOT_INODE.find(&new_name).is_some() {
         return -1;
     }
-    if ROOT_INODE.link(&new_name, &old_inode) == 1 {
-        println!("Successfully linked");
-        return 0;
+    println!("There is no new name");
+    // ERROR 问题出在 link里面
+    if ROOT_INODE.link(&new_name, &old_name) == 0 {
+        println!("Link failed");
+        return -1;
+    }
+    {
+        let target_inode = ROOT_INODE.find(old_name.as_str()).unwrap();
+        target_inode.modify_disk_inode(|disk_inode| {
+            disk_inode.link_count += 1;
+        });
     }
     // match ROOT_INODE.
     -1
@@ -165,18 +176,17 @@ pub fn sys_unlinkat(_name: *const u8) -> isize {
     increase_syscall_times(SYSCALL_UNLINKAT);
     trace!("kernel:pid[{}] sys_unlinkat", current_task().unwrap().pid.0);
     let path = translated_str(current_user_token(), _name);
-    let inode = match ROOT_INODE.find(path.as_str()) {
-        Some(id) => id,
-        None => return -1,
-    };
-    inode.modify_disk_inode(|disk_inode| {
-        if disk_inode.link_count > 0 {
-            disk_inode.link_count -= 1;
+    println!("Find path: {}", path);
+    let target_inode = match ROOT_INODE.find(&path) {
+        Some(inode) => inode,
+        None => {
+            println!("This file does not exists");
+            return -1;
         }
-    });
-    let link_count = inode.read_disk_inode(|disk_inode| disk_inode.link_count);
-    if link_count == 0 {
-        inode.clear();
+    };
+    if ROOT_INODE.unlink(&path, &target_inode) == 1 {
+        println!("Successfully unlink");
+        return 0;
     }
     -1
 }

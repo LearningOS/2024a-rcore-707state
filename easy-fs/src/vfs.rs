@@ -2,9 +2,10 @@ use super::{
     block_cache_sync_all, get_block_cache, BlockDevice, DirEntry, DiskInode, DiskInodeType,
     EasyFileSystem, DIRENT_SZ,
 };
-use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use alloc::{string::String, vec};
+use log::info;
 use spin::{Mutex, MutexGuard};
 /// Virtual filesystem layer over easy-fs
 pub struct Inode {
@@ -188,18 +189,13 @@ impl Inode {
         block_cache_sync_all();
     }
     /// link, 将一个new_name链接到target_inode
-    pub fn link(&self, new_name: &str, target_inode: &Arc<Inode>) -> usize {
+    /// 我有一个问题，就是说read是怎么读取到文件的呢？我要先看看read是怎么个事
+    pub fn link(&self, new_name: &str, old_name: &str) -> usize {
         // 获取文件系统锁
         let mut fs = self.fs.lock();
-        // // 检查当前 inode 是否是目录（因为硬链接只能在目录中创建）
-        // let op = |disk_inode: &DiskInode| {
-        //     assert!(disk_inode.is_dir(), "Link target must be a directory");
-        //     // 检查是否已存在相同名称的文件
-        //     self.find_inode_id(new_name, disk_inode)
-        // };
-        // if self.read_disk_inode(op).is_some() {
-        //     return 0; // 如果目标目录中已有相同名称的文件，返回错误
-        // }
+        let target_inode_id = self
+            .read_disk_inode(|prev_inode| self.find_inode_id(old_name, prev_inode))
+            .unwrap();
         // 在目录中创建新条目，指向 `target_inode`
         self.modify_disk_inode(|disk_inode| {
             // 获取目录中的文件数量
@@ -208,13 +204,52 @@ impl Inode {
             // 增加目录的大小，以容纳新的条目
             self.increase_size(new_size as u32, disk_inode, &mut fs);
             // 创建新的目录条目，指向目标 inode
-            let dirent = DirEntry::new(new_name, target_inode.block_id as u32);
+            // !!! WARNING 第二个参数是inode id不是block id, 他妈的传错了
+
+            let dirent = DirEntry::new(new_name, target_inode_id as u32);
             disk_inode.write_at(
                 file_count * DIRENT_SZ,
                 dirent.as_bytes(),
                 &self.block_device,
             );
             disk_inode.link_count += 1;
+        });
+        // WARNING 计数修改应该在外部发生
+        // // target_inode修改
+        // target_inode.modify_disk_inode(|disk_inode| {
+        //     disk_inode.link_count += 1;
+        // });
+        block_cache_sync_all();
+        1
+    }
+    /// unlink，将一个name对应的inode项计数-1, 同时在文件系统中清楚这个项
+    /// 不实现删除一个inode了，先放一放
+    pub fn unlink(&self, name: &str, target_inode: &Arc<Inode>) -> usize {
+        let mut fs = self.fs.lock();
+        // Step 2: Decrease link count on the target inode's disk_inode
+        let _should_delete = target_inode.modify_disk_inode(|disk_inode| {
+            if disk_inode.link_count > 0 {
+                disk_inode.link_count -= 1;
+            }
+            disk_inode.link_count == 0
+        });
+        // Step 3: Remove the directory entry for `name` in current directory
+        self.modify_disk_inode(|root_inode| {
+            let file_count = (root_inode.size as usize) / DIRENT_SZ;
+            let new_size = (file_count - 1) * DIRENT_SZ;
+            self.increase_size(new_size as u32, root_inode, &mut fs);
+
+            // Find the directory entry and "erase" it
+            let mut dirent = DirEntry::empty();
+            for i in 0..file_count {
+                // Read directory entry at i
+                root_inode.read_at(i * DIRENT_SZ, dirent.as_bytes_mut(), &self.block_device);
+                if dirent.name() == name {
+                    // "erase" the directory entry by writing zeroes (or marking as unused)
+                    root_inode.write_at(i * DIRENT_SZ, &vec![0u8; DIRENT_SZ], &self.block_device);
+                    break;
+                }
+            }
         });
         block_cache_sync_all();
         1
