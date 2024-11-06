@@ -30,6 +30,7 @@ impl Semaphore {
     }
 
     /// up operation of semaphore
+    /// V 操作
     pub fn up(&self) {
         trace!("kernel: Semaphore::up");
         let mut inner = self.inner.exclusive_access();
@@ -42,6 +43,7 @@ impl Semaphore {
     }
 
     /// down operation of semaphore
+    ///  P 操作
     pub fn down(&self) {
         trace!("kernel: Semaphore::down");
         let mut inner = self.inner.exclusive_access();

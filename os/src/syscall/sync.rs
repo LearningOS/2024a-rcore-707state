@@ -1,4 +1,4 @@
-use crate::sync::{Condvar, Mutex, MutexBlocking, MutexSpin, Semaphore};
+use crate::sync::{Condvar, Mutex, MutexBlocking, MutexSpin, Semaphore, DEADLOCK_MANAGER};
 use crate::task::{block_current_and_run_next, current_process, current_task};
 use crate::timer::{add_timer, get_time_ms};
 use alloc::sync::Arc;
@@ -23,17 +23,19 @@ pub fn sys_sleep(ms: usize) -> isize {
 }
 /// mutex create syscall
 pub fn sys_mutex_create(blocking: bool) -> isize {
+    let thread_id = current_task()
+        .unwrap()
+        .inner_exclusive_access()
+        .res
+        .as_ref()
+        .unwrap()
+        .tid;
     trace!(
         "kernel:pid[{}] tid[{}] sys_mutex_create",
         current_task().unwrap().process.upgrade().unwrap().getpid(),
-        current_task()
-            .unwrap()
-            .inner_exclusive_access()
-            .res
-            .as_ref()
-            .unwrap()
-            .tid
+        thread_id
     );
+
     let process = current_process();
     let mutex: Option<Arc<dyn Mutex>> = if !blocking {
         Some(Arc::new(MutexSpin::new()))
@@ -41,6 +43,7 @@ pub fn sys_mutex_create(blocking: bool) -> isize {
         Some(Arc::new(MutexBlocking::new()))
     };
     let mut process_inner = process.inner_exclusive_access();
+    //找出当前进程中的mutex_list中的空位，找到就放入，否则就添加到mutex_list后面
     if let Some(id) = process_inner
         .mutex_list
         .iter()
@@ -57,17 +60,25 @@ pub fn sys_mutex_create(blocking: bool) -> isize {
 }
 /// mutex lock syscall
 pub fn sys_mutex_lock(mutex_id: usize) -> isize {
+    let thread_id = current_task()
+        .unwrap()
+        .inner_exclusive_access()
+        .res
+        .as_ref()
+        .unwrap()
+        .tid;
     trace!(
         "kernel:pid[{}] tid[{}] sys_mutex_lock",
         current_task().unwrap().process.upgrade().unwrap().getpid(),
-        current_task()
-            .unwrap()
-            .inner_exclusive_access()
-            .res
-            .as_ref()
-            .unwrap()
-            .tid
+        thread_id
     );
+    let mut dead_lock_inner = DEADLOCK_MANAGER.exclusive_access();
+    dead_lock_inner.spinlock.lock();
+    let result = dead_lock_inner.request_resource(thread_id, mutex_id, 1);
+    dead_lock_inner.spinlock.unlock();
+    if result == -0xdead {
+        return result;
+    }
     let process = current_process();
     let process_inner = process.inner_exclusive_access();
     let mutex = Arc::clone(process_inner.mutex_list[mutex_id].as_ref().unwrap());
@@ -112,6 +123,7 @@ pub fn sys_semaphore_create(res_count: usize) -> isize {
     );
     let process = current_process();
     let mut process_inner = process.inner_exclusive_access();
+    // 与上面的mutex_list差不多
     let id = if let Some(id) = process_inner
         .semaphore_list
         .iter()
@@ -151,17 +163,25 @@ pub fn sys_semaphore_up(sem_id: usize) -> isize {
 }
 /// semaphore down syscall
 pub fn sys_semaphore_down(sem_id: usize) -> isize {
+    let thread_id = current_task()
+        .unwrap()
+        .inner_exclusive_access()
+        .res
+        .as_ref()
+        .unwrap()
+        .tid;
     trace!(
         "kernel:pid[{}] tid[{}] sys_semaphore_down",
         current_task().unwrap().process.upgrade().unwrap().getpid(),
-        current_task()
-            .unwrap()
-            .inner_exclusive_access()
-            .res
-            .as_ref()
-            .unwrap()
-            .tid
+        thread_id
     );
+    let mut dead_lock_inner = DEADLOCK_MANAGER.exclusive_access();
+    dead_lock_inner.spinlock.lock();
+    let result = dead_lock_inner.request_resource(thread_id, sem_id, 1);
+    dead_lock_inner.spinlock.unlock();
+    if result == -0xdead {
+        return result;
+    }
     let process = current_process();
     let process_inner = process.inner_exclusive_access();
     let sem = Arc::clone(process_inner.semaphore_list[sem_id].as_ref().unwrap());
@@ -184,6 +204,7 @@ pub fn sys_condvar_create() -> isize {
     );
     let process = current_process();
     let mut process_inner = process.inner_exclusive_access();
+    // 操作同上
     let id = if let Some(id) = process_inner
         .condvar_list
         .iter()
@@ -245,7 +266,15 @@ pub fn sys_condvar_wait(condvar_id: usize, mutex_id: usize) -> isize {
 /// enable deadlock detection syscall
 ///
 /// YOUR JOB: Implement deadlock detection, but might not all in this syscall
-pub fn sys_enable_deadlock_detect(_enabled: usize) -> isize {
+pub fn sys_enable_deadlock_detect(enabled: usize) -> isize {
     trace!("kernel: sys_enable_deadlock_detect NOT IMPLEMENTED");
-    -1
+    if enabled > 1 {
+        println!("Only 1 or 0 is accepted");
+        return -1;
+    }
+    let mut dead_lock_inner = DEADLOCK_MANAGER.exclusive_access();
+    dead_lock_inner.spinlock.lock();
+    dead_lock_inner.enable(enabled == 1);
+    dead_lock_inner.spinlock.unlock();
+    0
 }
