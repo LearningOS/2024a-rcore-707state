@@ -171,7 +171,7 @@ pub fn sys_semaphore_down(sem_id: usize) -> isize {
         {
             current_process()
                 .inner_exclusive_access()
-                .lock_semaphor(thread_id, sem_id);
+                .unlock_semaphor(thread_id, sem_id);
         }
     } else {
         return -0xdead;

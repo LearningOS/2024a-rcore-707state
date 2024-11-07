@@ -51,29 +51,6 @@ impl DeadlockDetector {
         self.allocated[task_id].fill(0);
         self.need[task_id].fill(0);
     }
-    // 重置指定资源的需求
-    fn reset_resource(&mut self, id: usize) {
-        self.available[id] = 0;
-        for task in &mut self.max_demand {
-            task[id] = 0;
-        }
-        for task in &mut self.allocated {
-            task[id] = 0;
-        }
-        for task in &mut self.need {
-            task[id] = 0;
-        }
-    }
-    // 设置资源总数
-    #[allow(unused)]
-    fn set_resource(&mut self, id: usize, _resource: ResourceType, total: usize) {
-        if id >= self.available.len() {
-            self.available.push(total);
-            self.extend_matrix();
-        } else {
-            self.available[id] = total;
-        }
-    }
     /// 扩展所有任务的资源矩阵
     #[allow(unused)]
     fn extend_all_task_matrices(&mut self) {
@@ -109,7 +86,7 @@ impl DeadlockDetector {
     }
     /// 获取资源的 ID
     fn resource_id(&self, resource: ResourceType) -> Option<usize> {
-        self.resources.iter().position(|&res| res == Some(resource))
+        self.resources.iter().position(|res| res == &Some(resource))
     }
     /// 更新任务
     pub fn update_task(&mut self, task_id: usize) -> usize {
@@ -162,7 +139,10 @@ impl DeadlockDetector {
         if let Some(id) = self.resource_id(resource) {
             self.resources[id] = None;
             self.recycled.push_back(id);
-            self.reset_resource(id);
+            self.available[id] = 0;
+            self.max_demand.iter_mut().for_each(|task| task[id] = 0);
+            self.allocated.iter_mut().for_each(|task| task[id] = 0);
+            self.need.iter_mut().for_each(|task| task[id] = 0);
             true
         } else {
             false
