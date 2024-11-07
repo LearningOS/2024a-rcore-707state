@@ -1,11 +1,12 @@
 use crate::{
     config::MAX_SYSCALL_NUM,
     fs::{open_file, OpenFlags},
-    mm::{translated_ref, translated_refmut, translated_str},
+    mm::{translated_ref, translated_refmut, translated_str, PageTable, VirtAddr},
     task::{
         current_process, current_task, current_user_token, exit_current_and_run_next, pid2process,
         suspend_current_and_run_next, SignalFlags, TaskStatus,
     },
+    timer::get_time,
 };
 use alloc::{string::String, sync::Arc, vec::Vec};
 
@@ -162,12 +163,42 @@ pub fn sys_kill(pid: usize, signal: u32) -> isize {
 /// YOUR JOB: get time with second and microsecond
 /// HINT: You might reimplement it with virtual memory management.
 /// HINT: What if [`TimeVal`] is splitted by two pages ?
-pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
+pub fn sys_get_time(ts: *mut TimeVal, _tz: usize) -> isize {
     trace!(
         "kernel:pid[{}] sys_get_time NOT IMPLEMENTED",
         current_task().unwrap().process.upgrade().unwrap().getpid()
     );
-    -1
+    let page_table = PageTable::from_token(current_user_token());
+    let current_time = get_time();
+    let time_val = TimeVal {
+        sec: current_time / 1_000_000,
+        usec: current_time % 1_000_000,
+    };
+    let mut ts_addr = ts as usize;
+    let time_val_bytes = unsafe {
+        core::slice::from_raw_parts(
+            &time_val as *const _ as *const u8,
+            core::mem::size_of::<TimeVal>(),
+        )
+    };
+    for chunk in time_val_bytes.chunks(4096) {
+        let vpn = VirtAddr::from(ts_addr).floor();
+        let page_offset = VirtAddr::from(ts_addr).page_offset();
+        let pte = match page_table.translate(vpn) {
+            Some(pte) if pte.is_valid() => pte,
+            _ => return -1,
+        };
+        let ppn = pte.ppn();
+        let bytes = ppn.get_bytes_array();
+        let write_len = (bytes.len() - page_offset).min(chunk.len());
+        for i in 0..write_len {
+            unsafe {
+                core::ptr::write_volatile(bytes.as_mut_ptr().add(page_offset + i), chunk[i]);
+            }
+        }
+        ts_addr += write_len;
+    }
+    0
 }
 
 /// task_info syscall

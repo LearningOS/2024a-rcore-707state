@@ -97,9 +97,9 @@ impl ProcessControlBlockInner {
         }
     }
     /// add a new semaphore to detector
-    pub fn add_semaphor(&mut self, semaphor_id: usize) {
+    pub fn add_semaphor(&mut self, semaphor_id: usize, total: usize) {
         if let Some(detector) = self.deadlock_detector.as_mut() {
-            detector.add_resource(ResourceType::Semaphore(semaphor_id), 1);
+            detector.add_resource(ResourceType::Semaphore(semaphor_id), total);
         }
     }
     /// try lock mutex

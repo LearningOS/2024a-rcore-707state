@@ -76,11 +76,9 @@ pub fn sys_mutex_lock(mutex_id: usize) -> isize {
     drop(process);
     if requesing_lock {
         mutex.lock();
-        {
-            current_process()
-                .inner_exclusive_access()
-                .lock_mutex(thread_id, mutex_id);
-        }
+        current_process()
+            .inner_exclusive_access()
+            .lock_mutex(thread_id, mutex_id);
     } else {
         return -0xdead;
     }
@@ -102,6 +100,9 @@ pub fn sys_mutex_unlock(mutex_id: usize) -> isize {
     drop(process_inner);
     drop(process);
     mutex.unlock();
+    current_process()
+        .inner_exclusive_access()
+        .unlock_mutex(thread_id, mutex_id);
     0
 }
 /// semaphore create syscall
@@ -126,7 +127,7 @@ pub fn sys_semaphore_create(res_count: usize) -> isize {
             .semaphore_list
             .push(Some(Arc::new(Semaphore::new(res_count))));
         let semaphor_id = process_inner.semaphore_list.len() - 1;
-        process_inner.add_semaphor(semaphor_id);
+        process_inner.add_semaphor(semaphor_id, res_count);
         semaphor_id
     };
     id as isize
@@ -140,21 +141,15 @@ pub fn sys_semaphore_up(sem_id: usize) -> isize {
         thread_id,
     );
     let process = current_process();
-    let process_inner = process.inner_exclusive_access();
+    let mut process_inner = process.inner_exclusive_access();
     let sem = Arc::clone(process_inner.semaphore_list[sem_id].as_ref().unwrap());
-    drop(process_inner);
     sem.up();
+    process_inner.unlock_semaphor(thread_id, sem_id);
     0
 }
 /// semaphore down syscall
 pub fn sys_semaphore_down(sem_id: usize) -> isize {
-    let thread_id = current_task()
-        .unwrap()
-        .inner_exclusive_access()
-        .res
-        .as_ref()
-        .unwrap()
-        .tid;
+    let thread_id = current_tid();
     trace!(
         "kernel:pid[{}] tid[{}] sys_semaphore_down",
         current_task().unwrap().process.upgrade().unwrap().getpid(),
@@ -168,11 +163,9 @@ pub fn sys_semaphore_down(sem_id: usize) -> isize {
     drop(process);
     if requesting {
         sem.down();
-        {
-            current_process()
-                .inner_exclusive_access()
-                .unlock_semaphor(thread_id, sem_id);
-        }
+        current_process()
+            .inner_exclusive_access()
+            .lock_semaphor(thread_id, sem_id);
     } else {
         return -0xdead;
     }
