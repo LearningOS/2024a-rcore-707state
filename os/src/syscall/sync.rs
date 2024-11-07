@@ -1,5 +1,7 @@
-use crate::sync::{Condvar, Mutex, MutexBlocking, MutexSpin, Semaphore, DEADLOCK_MANAGER};
-use crate::task::{block_current_and_run_next, current_process, current_task};
+use crate::sync::{Condvar, Mutex, MutexBlocking, MutexSpin, Semaphore};
+use crate::task::{
+    block_current_and_run_next, current_pid, current_process, current_task, current_tid,
+};
 use crate::timer::{add_timer, get_time_ms};
 use alloc::sync::Arc;
 /// sleep syscall
@@ -55,53 +57,47 @@ pub fn sys_mutex_create(blocking: bool) -> isize {
         id as isize
     } else {
         process_inner.mutex_list.push(mutex);
-        process_inner.mutex_list.len() as isize - 1
+        let mutex_id = process_inner.mutex_list.len() as isize - 1;
+        process_inner.add_mutex(mutex_id as usize);
+        mutex_id
     }
 }
 /// mutex lock syscall
+/// 尝试加锁，如果加锁失败就返回-0xdead
 pub fn sys_mutex_lock(mutex_id: usize) -> isize {
-    let thread_id = current_task()
-        .unwrap()
-        .inner_exclusive_access()
-        .res
-        .as_ref()
-        .unwrap()
-        .tid;
-    trace!(
-        "kernel:pid[{}] tid[{}] sys_mutex_lock",
-        current_task().unwrap().process.upgrade().unwrap().getpid(),
-        thread_id
-    );
-    let mut dead_lock_inner = DEADLOCK_MANAGER.exclusive_access();
-    dead_lock_inner.spinlock.lock();
-    let result = dead_lock_inner.request_resource(thread_id, mutex_id, 1);
-    dead_lock_inner.spinlock.unlock();
-    if result == -0xdead {
-        return result;
-    }
+    let thread_id = current_tid();
+    let pid = current_pid();
+    trace!("kernel:pid[{}] tid[{}] sys_mutex_lock", pid, thread_id);
     let process = current_process();
-    let process_inner = process.inner_exclusive_access();
+    let mut process_inner = process.inner_exclusive_access();
     let mutex = Arc::clone(process_inner.mutex_list[mutex_id].as_ref().unwrap());
+    let requesing_lock = process_inner.try_lock_mutex(thread_id, mutex_id);
     drop(process_inner);
     drop(process);
-    mutex.lock();
+    if requesing_lock {
+        mutex.lock();
+        {
+            current_process()
+                .inner_exclusive_access()
+                .lock_mutex(thread_id, mutex_id);
+        }
+    } else {
+        return -0xdead;
+    }
     0
 }
 /// mutex unlock syscall
+/// 解锁必然是加锁成功才能解锁
 pub fn sys_mutex_unlock(mutex_id: usize) -> isize {
+    let thread_id = current_tid();
     trace!(
         "kernel:pid[{}] tid[{}] sys_mutex_unlock",
         current_task().unwrap().process.upgrade().unwrap().getpid(),
-        current_task()
-            .unwrap()
-            .inner_exclusive_access()
-            .res
-            .as_ref()
-            .unwrap()
-            .tid
+        thread_id,
     );
     let process = current_process();
-    let process_inner = process.inner_exclusive_access();
+    let mut process_inner = process.inner_exclusive_access();
+    process_inner.unlock_mutex(thread_id, mutex_id);
     let mutex = Arc::clone(process_inner.mutex_list[mutex_id].as_ref().unwrap());
     drop(process_inner);
     drop(process);
@@ -110,17 +106,9 @@ pub fn sys_mutex_unlock(mutex_id: usize) -> isize {
 }
 /// semaphore create syscall
 pub fn sys_semaphore_create(res_count: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] tid[{}] sys_semaphore_create",
-        current_task().unwrap().process.upgrade().unwrap().getpid(),
-        current_task()
-            .unwrap()
-            .inner_exclusive_access()
-            .res
-            .as_ref()
-            .unwrap()
-            .tid
-    );
+    let pid = current_pid();
+    let tid = current_tid();
+    trace!("kernel:pid[{}] tid[{}] sys_semaphore_create", pid, tid);
     let process = current_process();
     let mut process_inner = process.inner_exclusive_access();
     // 与上面的mutex_list差不多
@@ -137,22 +125,19 @@ pub fn sys_semaphore_create(res_count: usize) -> isize {
         process_inner
             .semaphore_list
             .push(Some(Arc::new(Semaphore::new(res_count))));
-        process_inner.semaphore_list.len() - 1
+        let semaphor_id = process_inner.semaphore_list.len() - 1;
+        process_inner.add_semaphor(semaphor_id);
+        semaphor_id
     };
     id as isize
 }
 /// semaphore up syscall
 pub fn sys_semaphore_up(sem_id: usize) -> isize {
+    let thread_id = current_tid();
     trace!(
         "kernel:pid[{}] tid[{}] sys_semaphore_up",
         current_task().unwrap().process.upgrade().unwrap().getpid(),
-        current_task()
-            .unwrap()
-            .inner_exclusive_access()
-            .res
-            .as_ref()
-            .unwrap()
-            .tid
+        thread_id,
     );
     let process = current_process();
     let process_inner = process.inner_exclusive_access();
@@ -175,18 +160,22 @@ pub fn sys_semaphore_down(sem_id: usize) -> isize {
         current_task().unwrap().process.upgrade().unwrap().getpid(),
         thread_id
     );
-    let mut dead_lock_inner = DEADLOCK_MANAGER.exclusive_access();
-    dead_lock_inner.spinlock.lock();
-    let result = dead_lock_inner.request_resource(thread_id, sem_id, 1);
-    dead_lock_inner.spinlock.unlock();
-    if result == -0xdead {
-        return result;
-    }
     let process = current_process();
-    let process_inner = process.inner_exclusive_access();
+    let mut process_inner = process.inner_exclusive_access();
     let sem = Arc::clone(process_inner.semaphore_list[sem_id].as_ref().unwrap());
+    let requesting = process_inner.try_lock_semaphor(thread_id, sem_id);
     drop(process_inner);
-    sem.down();
+    drop(process);
+    if requesting {
+        sem.down();
+        {
+            current_process()
+                .inner_exclusive_access()
+                .lock_semaphor(thread_id, sem_id);
+        }
+    } else {
+        return -0xdead;
+    }
     0
 }
 /// condvar create syscall
@@ -266,15 +255,21 @@ pub fn sys_condvar_wait(condvar_id: usize, mutex_id: usize) -> isize {
 /// enable deadlock detection syscall
 ///
 /// YOUR JOB: Implement deadlock detection, but might not all in this syscall
+/// 2024-11-07
+/// 犯了一个大错，我搞错了死锁避免的对象，死锁避免是针对每一个process中的thread来说的，因此对于DeadlockDetector不是一个全局变量。
+/// DeadlockDetector应该是process中的一个成员，在process中每一次申请资源时处理请求。
 pub fn sys_enable_deadlock_detect(enabled: usize) -> isize {
     trace!("kernel: sys_enable_deadlock_detect NOT IMPLEMENTED");
     if enabled > 1 {
         println!("Only 1 or 0 is accepted");
         return -1;
     }
-    let mut dead_lock_inner = DEADLOCK_MANAGER.exclusive_access();
-    dead_lock_inner.spinlock.lock();
-    dead_lock_inner.enable(enabled == 1);
-    dead_lock_inner.spinlock.unlock();
+    let process = current_process();
+    if enabled == 1 {
+        process.enable_deadlock_detect();
+    }
+    if enabled == 0 {
+        process.disable_deadlock_detect();
+    }
     0
 }

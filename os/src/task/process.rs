@@ -7,7 +7,7 @@ use super::{add_task, SignalFlags};
 use super::{pid_alloc, PidHandle};
 use crate::fs::{File, Stdin, Stdout};
 use crate::mm::{translated_refmut, MemorySet, KERNEL_SPACE};
-use crate::sync::{Condvar, Mutex, Semaphore, UPSafeCell};
+use crate::sync::{Condvar, DeadlockDetector, Mutex, ResourceType, Semaphore, UPSafeCell};
 use crate::trap::{trap_handler, TrapContext};
 use alloc::string::String;
 use alloc::sync::{Arc, Weak};
@@ -49,6 +49,8 @@ pub struct ProcessControlBlockInner {
     pub semaphore_list: Vec<Option<Arc<Semaphore>>>,
     /// condvar list
     pub condvar_list: Vec<Option<Arc<Condvar>>>,
+    /// deadlock_detector
+    pub deadlock_detector: Option<DeadlockDetector>,
 }
 
 impl ProcessControlBlockInner {
@@ -81,6 +83,62 @@ impl ProcessControlBlockInner {
     /// get a task with tid in this process
     pub fn get_task(&self, tid: usize) -> Arc<TaskControlBlock> {
         self.tasks[tid].as_ref().unwrap().clone()
+    }
+    /// add a new task to detector
+    pub fn add_task(&mut self, task_id: usize) {
+        if let Some(detector) = self.deadlock_detector.as_mut() {
+            detector.update_task(task_id);
+        }
+    }
+    /// add a new mutex to detector
+    pub fn add_mutex(&mut self, mutex_id: usize) {
+        if let Some(detector) = self.deadlock_detector.as_mut() {
+            detector.add_resource(ResourceType::Mutex(mutex_id), 1);
+        }
+    }
+    /// add a new semaphore to detector
+    pub fn add_semaphor(&mut self, semaphor_id: usize) {
+        if let Some(detector) = self.deadlock_detector.as_mut() {
+            detector.add_resource(ResourceType::Semaphore(semaphor_id), 1);
+        }
+    }
+    /// try lock mutex
+    pub fn try_lock_mutex(&mut self, task_id: usize, mutex_id: usize) -> bool {
+        if let Some(detector) = self.deadlock_detector.as_mut() {
+            return detector.requesting(task_id, ResourceType::Mutex(mutex_id), 1);
+        }
+        true
+    }
+    /// lock mutex
+    pub fn lock_mutex(&mut self, task_id: usize, mutex_id: usize) {
+        if let Some(detector) = self.deadlock_detector.as_mut() {
+            detector.request_direct(task_id, ResourceType::Mutex(mutex_id), 1);
+        }
+    }
+    /// release mutex on task_id
+    pub fn unlock_mutex(&mut self, task_id: usize, mutex_id: usize) {
+        if let Some(detector) = self.deadlock_detector.as_mut() {
+            detector.release_task(task_id, ResourceType::Mutex(mutex_id), 1);
+        }
+    }
+    /// try lock semaphore
+    pub fn try_lock_semaphor(&mut self, task_id: usize, semaphor_id: usize) -> bool {
+        if let Some(detector) = self.deadlock_detector.as_mut() {
+            return detector.requesting(task_id, ResourceType::Semaphore(semaphor_id), 1);
+        }
+        true
+    }
+    /// lock semaphore
+    pub fn lock_semaphor(&mut self, task_id: usize, semaphor_id: usize) {
+        if let Some(detector) = self.deadlock_detector.as_mut() {
+            detector.request_direct(task_id, ResourceType::Semaphore(semaphor_id), 1);
+        }
+    }
+    /// unlock semaphor
+    pub fn unlock_semaphor(&mut self, task_id: usize, semaphor_id: usize) {
+        if let Some(detector) = self.deadlock_detector.as_mut() {
+            detector.release_task(task_id, ResourceType::Semaphore(semaphor_id), 1);
+        }
     }
 }
 
@@ -119,6 +177,7 @@ impl ProcessControlBlock {
                     mutex_list: Vec::new(),
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
+                    deadlock_detector: None,
                 })
             },
         });
@@ -245,6 +304,7 @@ impl ProcessControlBlock {
                     mutex_list: Vec::new(),
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
+                    deadlock_detector: None,
                 })
             },
         });
@@ -281,5 +341,20 @@ impl ProcessControlBlock {
     /// get pid
     pub fn getpid(&self) -> usize {
         self.pid.0
+    }
+    /// 切换到enable状态
+    pub fn enable_deadlock_detect(&self) {
+        let mut inner = self.inner_exclusive_access();
+
+        if inner.deadlock_detector.is_none() {
+            inner.deadlock_detector = Some(DeadlockDetector::new());
+        }
+    }
+    /// 切换到disable状态
+    pub fn disable_deadlock_detect(&self) {
+        let mut inner = self.inner_exclusive_access();
+        if inner.deadlock_detector.is_some() {
+            inner.deadlock_detector = None;
+        }
     }
 }

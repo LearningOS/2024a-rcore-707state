@@ -88,7 +88,22 @@ pub fn current_task() -> Option<Arc<TaskControlBlock>> {
 pub fn current_process() -> Arc<ProcessControlBlock> {
     current_task().unwrap().process.upgrade().unwrap()
 }
-
+/// get current tid
+#[allow(unused)]
+pub fn current_tid() -> usize {
+    current_task()
+        .unwrap()
+        .inner_exclusive_access()
+        .res
+        .as_ref()
+        .unwrap()
+        .tid
+}
+/// get current process id
+#[allow(unused)]
+pub fn current_pid() -> usize {
+    current_task().unwrap().process.upgrade().unwrap().getpid()
+}
 /// Get the current user token(addr of page table)
 pub fn current_user_token() -> usize {
     let task = current_task().unwrap();
